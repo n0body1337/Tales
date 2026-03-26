@@ -17,4 +17,6 @@
 // ============================================================================
 
 // Opening book module — Polyglot `.bin` format reader.
+pub mod external;
 pub mod internal;
+pub mod polyglot;

@@ -50,7 +50,7 @@ fn run_tests() {
 
     // ===== Perft =====
     pos.set_position(board::types::START_POS);
-    println!("Tales 1.0.0");
+    println!("Tales 1.0a");
     println!("Running perft from startpos...");
     for depth in 1..=5 {
         let nodes = movegen::gen::perft(&mut pos, depth);

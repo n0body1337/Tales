@@ -1,6 +1,6 @@
 [package]
 name = "tales"
-version = "1.0.0"
+version = "1.0.0-alpha"
 edition = "2021"
 authors = ["Andre MARTINS"]
 description = "Tales — UCI chess engine written in Rust"

@@ -28,7 +28,7 @@ use crate::search;
 use crate::tt::TransTable;
 use std::io;
 
-const ENGINE_NAME: &str = "Tales 1.0.0";
+const ENGINE_NAME: &str = "Tales 1.0a";
 const ENGINE_AUTHOR: &str = "Andre MARTINS";
 
 // ============================================================================
@@ -46,9 +46,12 @@ struct EngineState {
     multi_pv: usize,
     use_book: bool,
     verbose_book: bool,
+    book_filter: i32,
     book_file: String,
     ponder_enabled: bool,
     time_buffer: i64,
+    /// Loaded external polyglot book (when `UseBook` is true and file is valid).
+    external_book: Option<crate::book::external::ExternalBook>,
 }
 
 impl EngineState {
@@ -65,9 +68,31 @@ impl EngineState {
             multi_pv: 1,
             use_book: false,
             verbose_book: false,
+            book_filter: 20,
             book_file: String::from("book.bin"),
             ponder_enabled: false,
             time_buffer: 50,
+            external_book: None,
+        }
+    }
+
+    /// Try to load the external book from `self.book_file`.
+    /// On success, stores it in `self.external_book`.
+    /// On failure, prints an error and clears `self.external_book`.
+    fn try_load_external_book(&mut self) {
+        match crate::book::external::ExternalBook::load(&self.book_file) {
+            Ok(book) => {
+                println!(
+                    "info string loaded external book '{}' ({} entries)",
+                    self.book_file,
+                    book.entry_count()
+                );
+                self.external_book = Some(book);
+            }
+            Err(e) => {
+                println!("info string error loading external book: {e} — using internal book");
+                self.external_book = None;
+            }
         }
     }
 }
@@ -106,14 +131,15 @@ pub fn uci_loop() {
                 println!("id author {ENGINE_AUTHOR}");
                 println!();
                 // Options.cpp
-                println!("option name Hash type spin default 16 min 1 max 1024");
-                println!("option name Threads type spin default 1 min 1 max 16");
+                println!("option name Hash type spin default 16 min 1 max 33554432");
+                println!("option name Threads type spin default 1 min 1 max 1024");
                 println!("option name MoveOverhead type spin default 50 min 0 max 5000");
                 println!("option name MultiPV type spin default 1 min 1 max 64");
                 println!("option name Clear Hash type button");
                 println!("option name Ponder type check default false");
                 println!("option name UseBook type check default false");
                 println!("option name VerboseBook type check default false");
+                println!("option name BookFilter type spin default 20 min 0 max 100");
                 println!("option name MainBookFile type string default book.bin");
                 println!("option name TimeBuffer type spin default 50 min 0 max 1000");
                 println!("option name Contempt type spin default 0 min -100 max 100");
@@ -360,9 +386,21 @@ fn parse_go(pos: &mut Position, state: &mut EngineState, tokens: &[&str]) {
     // Set asymmetric parameters based on engine side
     state.par.init_asymmetric(pos.side);
 
-    // Probe the opening book (always-on, not gated by UseBook)
-    if let Some(book_mv) = crate::book::internal::probe(pos, state.verbose_book) {
-        println!("bestmove {book_mv}");
+    // Probe the opening book.
+    // When UseBook is true and an external book is loaded, use it exclusively.
+    // When UseBook is true but no external book could be loaded, fall back to internal.
+    // When UseBook is false, always use the internal embedded book.
+    let book_mv = if state.use_book {
+        if let Some(ref ext) = state.external_book {
+            ext.probe(pos, state.verbose_book, state.book_filter)
+        } else {
+            crate::book::internal::probe(pos, state.verbose_book, state.book_filter)
+        }
+    } else {
+        crate::book::internal::probe(pos, state.verbose_book, state.book_filter)
+    };
+    if let Some(mv) = book_mv {
+        println!("bestmove {mv}");
         return;
     }
 
@@ -475,7 +513,7 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
         "hash" => {
             if let Some(v) = value {
                 if let Ok(mb) = v.parse::<usize>() {
-                    let mb = mb.clamp(1, 1024);
+                    let mb = mb.clamp(1, 33_554_432);
                     state.tt = TransTable::new(mb);
                 }
             }
@@ -490,7 +528,7 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
         "threads" => {
             if let Some(v) = value {
                 if let Ok(val) = v.parse::<usize>() {
-                    state.num_threads = val.clamp(1, 16);
+                    state.num_threads = val.clamp(1, 1024);
                 }
             }
         }
@@ -512,6 +550,13 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
         "usebook" => {
             if let Some(v) = value {
                 state.use_book = v == "true";
+                // When enabling the book, try to load the external file
+                if state.use_book && state.external_book.is_none() {
+                    state.try_load_external_book();
+                }
+                if !state.use_book {
+                    state.external_book = None;
+                }
             }
         }
         "verbosebook" => {
@@ -519,9 +564,20 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
                 state.verbose_book = v == "true";
             }
         }
+        "bookfilter" => {
+            if let Some(v) = value {
+                if let Ok(val) = v.parse::<i32>() {
+                    state.book_filter = val.clamp(0, 100);
+                }
+            }
+        }
         "mainbookfile" => {
             if let Some(v) = value {
                 state.book_file = v.to_string();
+                // Reload the external book if UseBook is active
+                if state.use_book {
+                    state.try_load_external_book();
+                }
             }
         }
         "timebuffer" => {

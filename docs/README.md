@@ -11,7 +11,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" />
   <img src="https://img.shields.io/badge/protocol-UCI-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/version-1.0.0-green?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-1.0a-green?style=flat-square" />
   <img src="https://img.shields.io/badge/license-GPL--3.0-red?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=flat-square" />
 </p>
@@ -64,13 +64,36 @@ Tales implements a state-of-the-art alpha-beta search with the following techniq
 - Atomic coordination via `AtomicBool` (abort), `AtomicI32` (depth reached), `AtomicU64` (node count)
 - Only the main thread (thread 0) prints UCI info lines
 
-### 📖 Embedded Opening Book
+### 📖 Opening Book
+
+Tales includes a **dual book system** — an always-available internal book compiled into the binary, plus optional support for user-supplied external Polyglot books:
+
+#### Internal Book (default)
 
 - **Polyglot-format Tal book** (`ph-tal2.bin`, ~2 MB) compiled directly into the binary via `include_bytes!`
 - Canonical 781-entry Polyglot Zobrist table for position hashing
 - **Weighted random selection** with configurable filter threshold (default 20%)
 - Binary search for O(log n) probing, executes *before* the search thread is spawned
 - No external book files required — works out of the box
+
+#### External Book (v1.0a+)
+
+- Users can specify any **Polyglot `.bin` book** via the `MainBookFile` UCI option
+- Enable with `UseBook true` — the engine loads the file from disk into memory
+- When a valid external book is loaded, it is used **instead of** the internal book
+- If the file is not found or invalid, the engine prints an error and **falls back** to the internal book
+- The external book uses the same weighted random selection and Zobrist hashing as the internal book
+- Hot-swappable: changing `MainBookFile` while `UseBook` is active immediately reloads the new file
+
+#### Book Move Selection (`BookFilter`)
+
+Both the internal and external books use **weighted random selection** controlled by the `BookFilter` UCI option (0–100, default 20). This determines how selective the engine is when choosing from multiple book moves for the same position:
+
+- **`BookFilter 0`** — Consider *all* book moves, regardless of weight. Maximum opening variety.
+- **`BookFilter 20`** (default) — Filter out moves below 20% of the best move's weight. Balanced play.
+- **`BookFilter 100`** — Only consider the highest-weighted move(s). Deterministic, strongest-line play.
+
+Among the surviving candidates, the engine picks a move via weighted random selection — higher-weighted moves are still more likely to be chosen, but lower-weighted alternatives add variety.
 
 ### 🏰 Evaluation Engine
 
@@ -188,7 +211,7 @@ cargo build --release
 
 The binary will be at `target/release/tales.exe` (Windows) or `target/release/tales` (Linux).
 
-> **Note**: No external files are needed. The opening book is embedded in the binary.
+> **Note**: No external files are needed. The opening book is embedded in the binary. To use a custom opening book, see the UCI options `UseBook` and `MainBookFile` below.
 
 ### Running with a GUI
 
@@ -213,14 +236,15 @@ This runs a fixed set of 5 positions at increasing depths and reports total node
 
 | Option | Type | Default | Description |
 |:---|:---|:---:|:---|
-| `Hash` | spin | 16 | Transposition table size in MB (1–1024) |
-| `Threads` | spin | 1 | Number of search threads (1–16) |
+| `Hash` | spin | 16 | Transposition table size in MB (1–33554432) |
+| `Threads` | spin | 1 | Number of search threads (1–1024, Lazy SMP) |
 | `MultiPV` | spin | 1 | Number of principal variations (1–64) |
 | `MoveOverhead` | spin | 50 | Network/GUI lag buffer in ms (0–5000) |
 | `Ponder` | check | false | Enable background search on opponent's time |
-| `UseBook` | check | false | Enable/disable opening book probing |
+| `UseBook` | check | false | When `true`, use external book from `MainBookFile` instead of internal |
 | `VerboseBook` | check | false | Show book probe details in UCI info strings |
-| `MainBookFile` | string | book.bin | External opening book path |
+| `BookFilter` | spin | 20 | Book move quality threshold (0=all moves, 100=best only) |
+| `MainBookFile` | string | book.bin | Path to an external Polyglot `.bin` opening book |
 | `TimeBuffer` | spin | 50 | Additional time safety margin (0–1000 ms) |
 | `Contempt` | spin | 0 | Draw score bias (−100 to +100 cp) |
 | `EvalBlur` | spin | 0 | Evaluation noise for handicapping (0–40) |
@@ -239,34 +263,34 @@ This runs a fixed set of 5 positions at increasing depths and reports total node
 │              UCI Interface (uci/)            │
 │         Async command processing             │
 ├──────────────────────────────────────────────┤
-│    Embedded Book     │    Search Engine       │
-│   (book/internal)    │   ┌─────────────────┐ │
-│   Polyglot ph-tal2   │   │ Iterative Deep. │ │
-│   include_bytes!()   │   │ ├─ Aspiration    │ │
-│                      │   │ ├─ PVS + LMR    │ │
-│                      │   │ ├─ NMP + Verify  │ │
-│                      │   │ ├─ Razoring      │ │
-│                      │   │ ├─ Singular Ext  │ │
-│                      │   │ └─ 3-Layer QS    │ │
+│    Opening Book      │    Search Engine      │
+│   ┌──────────────┐   │   ┌─────────────────┐ │
+│   │  Internal    │   │   │ Iterative Deep. │ │
+│   │  (embedded)  │   │   │ ├─ Aspiration   │ │
+│   ├──────────────┤   │   │ ├─ PVS + LMR    │ │
+│   │  External    │   │   │ ├─ NMP + Verify │ │
+│   │  (disk .bin) │   │   │ ├─ Razoring     │ │
+│   └──────────────┘   │   │ ├─ Singular Ext │ │
+│                      │   │ └─ 3-Layer QS   │ │
 │                      │   └─────────────────┘ │
 ├──────────────────────────────────────────────┤
 │            Evaluation Engine (eval/)         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────┐ │
-│  │ Material │ │   PSTs   │ │ King Safety  │ │
-│  │(Imbalanc)│ │ (MG/EG)  │ │(Danger Table)│ │
-│  ├──────────┤ ├──────────┤ ├──────────────┤ │
-│  │ Mobility │ │  Pawns   │ │  Patterns    │ │
-│  │          │ │ (Chains) │ │  & Threats   │ │
-│  ├──────────┤ ├──────────┤ ├──────────────┤ │
-│  │ Passers  │ │ Endgame  │ │  Eval Hash   │ │
-│  └──────────┘ └──────────┘ └──────────────┘ │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────┐  │
+│  │ Material │ │   PSTs   │ │ King Safety  │  │
+│  │(Imbalanc)│ │ (MG/EG)  │ │(Danger Table)│  │
+│  ├──────────┤ ├──────────┤ ├──────────────┤  │
+│  │ Mobility │ │  Pawns   │ │  Patterns    │  │
+│  │          │ │ (Chains) │ │  & Threats   │  │
+│  ├──────────┤ ├──────────┤ ├──────────────┤  │
+│  │ Passers  │ │ Endgame  │ │  Eval Hash   │  │
+│  └──────────┘ └──────────┘ └──────────────┘  │
 ├──────────────────────────────────────────────┤
 │          Board Representation (board/)       │
-│  Hybrid Mailbox + Bitboard │ Magic Bitboard │
-│  Zobrist Hashing           │ SEE / Perft    │
+│  Hybrid Mailbox + Bitboard │ Magic Bitboard  │
+│  Zobrist Hashing           │ SEE / Perft     │
 ├──────────────────────────────────────────────┤
 │        Lazy SMP Thread Pool (search/)        │
-│  Shared TT (tt/)  │  Atomic Coordination    │
+│  Shared TT (tt/)  │  Atomic Coordination     │
 └──────────────────────────────────────────────┘
 ```
 
@@ -281,9 +305,63 @@ src/
 │                    #   patterns, king safety, threats, endgame, pawn hash
 ├── search/          # Alpha-beta, quiescence, move ordering, Lazy SMP
 ├── tt/              # Transposition table (4-bucket, age-based)
-├── book/            # Embedded Polyglot opening book
+├── book/            # Opening book (internal embedded + external disk-based)
 └── uci/             # UCI protocol handler
 ```
+
+---
+
+## 🆕 What's New in 1.0a
+
+### External Opening Book Support
+
+Tales now supports **user-supplied Polyglot opening books**. This allows you to replace the built-in Tal-style book with any `.bin` Polyglot book file — from a broader GM repertoire to a specialized opening suite.
+
+**How to use:**
+
+1. Set the path to your book file:
+
+   ```
+   setoption name MainBookFile value /path/to/my-book.bin
+   ```
+
+2. Enable external book usage:
+
+   ```
+   setoption name UseBook value true
+   ```
+
+3. The engine will confirm loading:
+
+   ```
+   info string loaded external book '/path/to/my-book.bin' (128903 entries)
+   ```
+
+**Error handling:** If the file cannot be found or is corrupt, the engine prints an error and automatically falls back to the internal embedded book:
+
+```
+info string error loading external book: cannot read 'missing.bin': ... — using internal book
+```
+
+**Behavior summary:**
+
+| `UseBook` | External file found | Book used |
+|:---------:|:-------------------:|:---------:|
+| `false`   | —                   | Internal  |
+| `true`    | ✅ Yes              | External  |
+| `true`    | ❌ No / invalid     | Internal (fallback) |
+
+### Book Move Quality Filter
+
+The new **`BookFilter`** option (inspired by Rodent III/IV) controls how selective the engine is when choosing from book moves:
+
+```
+setoption name BookFilter value 0     # use all book moves (maximum variety)
+setoption name BookFilter value 20    # default — filter weak alternatives
+setoption name BookFilter value 100   # always play the best book move
+```
+
+The value is a percentage threshold: moves whose weight is below `(best_weight × BookFilter / 100)` are excluded. This applies to both the internal and external books.
 
 ---
 
