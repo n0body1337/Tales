@@ -31,9 +31,9 @@ pub const PHA_EG: usize = 3;
 
 // Imbalance data constants
 pub const A_EXC_D: i32 = -10;
-pub const A_MIN_D: i32 = 60;
-pub const A_MAJ_D: i32 = 53;
-pub const A_TWO_D: i32 = 29;
+pub const A_MIN_D: i32 = 53;
+pub const A_MAJ_D: i32 = 60;
+pub const A_TWO_D: i32 = 44;
 pub const A_ALL_D: i32 = 80;
 
 const IMBALANCE_DATA: [[i32; 9]; 9] = [
@@ -291,11 +291,11 @@ impl EvalParams {
             b_pair: 70,  // bishop pair bonus
             n_pair: -10, // two-knight penalty
             r_pair: -9,  // two-rook redundancy penalty
-            eleph: 10,   // queen devaluation per enemy minor on the board
+            eleph: 4,    // queen devaluation per enemy minor on the board
             a_exc: -10,  // exchange advantage adjustment
-            a_min: 60,   // bonus for minor piece advantage
-            a_maj: 53,   // bonus for major piece advantage
-            a_two: 29,   // bonus for two minors vs rook
+            a_min: 53,   // bonus for minor piece advantage
+            a_maj: 60,   // bonus for major piece advantage
+            a_two: 44,   // bonus for two minors vs rook
             a_all: 80,   // bonus for combined major + minor advantage
             n_cl: 6,     // knight bonus per own pawn (prefers closed positions)
             r_op: 3,     // rook penalty per own pawn (prefers open positions)
@@ -347,16 +347,16 @@ impl EvalParams {
             b_trap_a2: -138, // bishop trapped on a2/a7 (or mirrored)
             b_trap_a3: -45,  // bishop trapped on a3/a6 (or mirrored)
             b_block: -45,    // blocked development (bishop behind own d2/e2 pawn)
-            b_fianch: 13,    // fianchettoed bishop bonus
+            b_fianch: 4,     // fianchettoed bishop bonus
             b_badf: -27,     // enemy pawns hamper fianchettoed bishop
-            b_king: 20,      // fianchettoed bishop near own castled king
+            b_king: 8,       // fianchettoed bishop near own castled king
             b_bf_mg: -12,    // fianchettoed bishop blocked by own pawn (e.g. Bg2 + Pf3)
             b_bf_eg: -20,
-            b_wing: 3,   // bishop on expected wing (e.g. Pe4 with Bc5/Bb5/Ba4)
-            b_own_p: -3, // own pawn on square matching bishop's color
-            b_opp_p: -1, // enemy pawn on square matching bishop's color
-            b_touch: 5,  // two bishops on adjacent squares
-            b_return: 7, // bishop returning to initial square after castling
+            b_wing: 3,    // bishop on expected wing (e.g. Pe4 with Bc5/Bb5/Ba4)
+            b_own_p: -3,  // own pawn on square matching bishop's color
+            b_opp_p: -1,  // enemy pawn on square matching bishop's color
+            b_touch: 5,   // two bishops on adjacent squares
+            b_return: 10, // bishop returning to initial square after castling
 
             // Rook and queen file/rank parameters
             rsr_mg: 16, // rook on 7th rank (middlegame)
@@ -382,13 +382,13 @@ impl EvalParams {
 
             // Pawn structure penalties/bonuses
             db_mid: -12,   // doubled pawn (middlegame)
-            db_end: -23,   // doubled pawn (endgame)
+            db_end: -24,   // doubled pawn (endgame)
             iso_mg: -10,   // isolated pawn (middlegame)
             iso_eg: -20,   // isolated pawn (endgame)
             iso_of: -10,   // extra penalty for isolated pawn on open file
             bk_mid: -8,    // backward pawn (middlegame)
-            bk_end: -8,    // backward pawn (endgame)
-            bk_ope: -10,   // extra penalty for backward pawn on open file
+            bk_end: -10,   // backward pawn (endgame)
+            bk_ope: -8,    // extra penalty for backward pawn on open file
             p_bind: 5,     // two pawns control a central square
             p_badbind: 10, // wing triangle penalty (e.g. a4-b3-c4)
             p_isl: 7,      // penalty per pawn island
@@ -436,13 +436,13 @@ impl EvalParams {
             w_tropism: 80,   // king tropism (piece proximity to enemy king)
             w_fwd: 0,        // forwardness bonus
             w_passers: 127,  // passed pawn evaluation
-            w_mass: 98,      // pawn mass (phalanx + defended pawns)
+            w_mass: 100,     // pawn mass (phalanx + defended pawns)
             w_chains: 100,   // pawn chain evaluation
             w_outposts: 100, // knight/bishop outpost bonuses
-            w_lines: 109,    // rook/queen on open files and 7th rank
+            w_lines: 100,    // rook/queen on open files and 7th rank
             w_struct: 90,    // pawn structure (doubled/isolated/backward)
             w_shield: 189,   // king pawn shield
-            w_storm: 191,    // pawn storm toward enemy king
+            w_storm: 181,    // pawn storm toward enemy king
             w_center: 50,    // central square control
 
             // Derived tables (populated by recalculate() and init_tables())
@@ -474,13 +474,13 @@ impl EvalParams {
             keep_pc: [8, 10, 10, 0, 20, 0, 0],
 
             // Search and strength-limiting
-            draw_score: 0,     // contempt: 0 = neutral toward draws
+            draw_score: 5,     // contempt: slight draw avoidance (Tal style)
             eval_blur: 0,      // evaluation noise for strength limiting
             hist_perc: 175,    // LMR aggressiveness (history percentage)
             hist_limit: 24576, // LMR history threshold
 
             nps_limit: 0,
-            time_percentage: 100,
+            time_percentage: 95,
             fl_weakening: false,
             elo: 2800,
         }
