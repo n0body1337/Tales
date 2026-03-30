@@ -177,18 +177,7 @@ panic = "abort"
 
 ## 🏆 Tournament Results
 
-Tales has been validated through automated tournament testing against its reference engine.
-
-### Tales vs OpenTal (C++ Reference) — 2000 games
-
-| | Tales | OpenTal |
-|:---|:---:|:---:|
-| Wins | 800 | 600 |
-| Draws | 600 | 600 |
-| Losses | 600 | 800 |
-| **Score** | **1200.0** | **800.0** |
-
-> *60% win rate, demonstrating the combined impact of Rust optimizations and search tuning.*
+**Tournament results need to be updated following the 1.0b release.**
 
 ### Stability Record
 
