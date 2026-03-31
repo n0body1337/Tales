@@ -22,7 +22,7 @@
 use crate::board::moves::*;
 use crate::board::position::Position;
 use crate::board::types::*;
-use crate::movegen::gen;
+use crate::movegen::generate;
 use crate::movegen::movelist::MoveList;
 use crate::movegen::see;
 
@@ -89,7 +89,7 @@ impl MovePicker {
                 1 => {
                     // Phase 1: generate captures
                     self.list.clear();
-                    gen::generate_captures(pos, &mut self.list);
+                    generate::generate_captures(pos, &mut self.list);
                     score_captures(pos, &mut self.list);
                     self.next_idx = 0;
                     self.bad_count = 0;
@@ -155,7 +155,7 @@ impl MovePicker {
                 6 => {
                     // Phase 6: generate quiet moves
                     self.list.clear();
-                    gen::generate_quiet(pos, &mut self.list);
+                    generate::generate_quiet(pos, &mut self.list);
                     score_quiet(pos, &mut self.list, history, self.ref_sq);
                     self.next_idx = 0;
                     self.phase = 7;
@@ -229,7 +229,7 @@ impl SpecialPicker {
                 }
                 1 => {
                     self.list.clear();
-                    gen::generate_captures(pos, &mut self.list);
+                    generate::generate_captures(pos, &mut self.list);
                     score_captures(pos, &mut self.list);
                     self.next_idx = 0;
                     self.phase = 2;
@@ -273,7 +273,7 @@ impl SpecialPicker {
                 5 => {
                     // Generate checking moves
                     self.list.clear();
-                    gen::generate_special(pos, &mut self.list);
+                    generate::generate_special(pos, &mut self.list);
                     score_quiet(pos, &mut self.list, history, -1);
                     self.next_idx = 0;
                     self.phase = 6;
@@ -307,7 +307,7 @@ pub struct CapturesPicker {
 impl CapturesPicker {
     pub fn new(pos: &Position) -> Self {
         let mut list = MoveList::new();
-        gen::generate_captures(pos, &mut list);
+        generate::generate_captures(pos, &mut list);
         score_captures(pos, &mut list);
         CapturesPicker { list, next_idx: 0 }
     }
@@ -608,7 +608,7 @@ fn input_available() -> bool {
     use std::os::windows::io::AsRawHandle;
 
     #[allow(non_snake_case)]
-    extern "system" {
+    unsafe extern "system" {
         fn PeekNamedPipe(
             hNamedPipe: *mut std::ffi::c_void,
             lpBuffer: *mut std::ffi::c_void,

@@ -511,32 +511,32 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
 
     match name.as_str() {
         "hash" => {
-            if let Some(v) = value {
-                if let Ok(mb) = v.parse::<usize>() {
-                    let mb = mb.clamp(1, 33_554_432);
-                    state.tt = TransTable::new(mb);
-                }
+            if let Some(v) = value
+                && let Ok(mb) = v.parse::<usize>()
+            {
+                let mb = mb.clamp(1, 33_554_432);
+                state.tt = TransTable::new(mb);
             }
         }
         "moveoverhead" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<u64>() {
-                    state.searcher.move_overhead_ms = val.min(5000);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<u64>()
+            {
+                state.searcher.move_overhead_ms = val.min(5000);
             }
         }
         "threads" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<usize>() {
-                    state.num_threads = val.clamp(1, 1024);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<usize>()
+            {
+                state.num_threads = val.clamp(1, 1024);
             }
         }
         "multipv" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<usize>() {
-                    state.multi_pv = val.clamp(1, 64);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<usize>()
+            {
+                state.multi_pv = val.clamp(1, 64);
             }
         }
         "clear hash" => {
@@ -565,10 +565,10 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
             }
         }
         "bookfilter" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i32>() {
-                    state.book_filter = val.clamp(0, 100);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i32>()
+            {
+                state.book_filter = val.clamp(0, 100);
             }
         }
         "mainbookfile" => {
@@ -581,39 +581,39 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
             }
         }
         "timebuffer" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i64>() {
-                    state.time_buffer = val.clamp(0, 1000);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i64>()
+            {
+                state.time_buffer = val.clamp(0, 1000);
             }
         }
         "contempt" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i32>() {
-                    state.par.draw_score = val.clamp(-100, 100);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i32>()
+            {
+                state.par.draw_score = val.clamp(-100, 100);
             }
         }
         "evalblur" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i32>() {
-                    state.par.eval_blur = val.clamp(0, 40);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i32>()
+            {
+                state.par.eval_blur = val.clamp(0, 40);
             }
         }
         "npslimit" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i32>() {
-                    state.par.nps_limit = val.clamp(0, 1_000_000);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i32>()
+            {
+                state.par.nps_limit = val.clamp(0, 1_000_000);
             }
         }
         "uci_elo" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i32>() {
-                    state.par.elo = val.clamp(800, 2800);
-                    state.par.set_speed();
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i32>()
+            {
+                state.par.elo = val.clamp(800, 2800);
+                state.par.set_speed();
             }
         }
         "uci_limitstrength" => {
@@ -623,20 +623,20 @@ fn parse_setoption(tokens: &[&str], state: &mut EngineState) {
             }
         }
         "slowmover" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i32>() {
-                    state.par.time_percentage = val.clamp(10, 200);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i32>()
+            {
+                state.par.time_percentage = val.clamp(10, 200);
             }
         }
         "selectivity" => {
-            if let Some(v) = value {
-                if let Ok(val) = v.parse::<i32>() {
-                    state.par.hist_perc = val.clamp(100, 500);
-                    // hist_limit = -MAX_HIST + ((MAX_HIST * hist_perc) / 100)
-                    const MAX_HIST: i32 = 1 << 15; // 32768
-                    state.par.hist_limit = -MAX_HIST + ((MAX_HIST * state.par.hist_perc) / 100);
-                }
+            if let Some(v) = value
+                && let Ok(val) = v.parse::<i32>()
+            {
+                state.par.hist_perc = val.clamp(100, 500);
+                // hist_limit = -MAX_HIST + ((MAX_HIST * hist_perc) / 100)
+                const MAX_HIST: i32 = 1 << 15; // 32768
+                state.par.hist_limit = -MAX_HIST + ((MAX_HIST * state.par.hist_perc) / 100);
             }
         }
         _ => {}

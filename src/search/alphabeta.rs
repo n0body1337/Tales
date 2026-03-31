@@ -43,7 +43,7 @@ pub struct LmrTable {
     pub table: [[[i32; LMR_MAX_MOVES]; MAX_PLY]; 2],
 }
 
-#[allow(clippy::needless_range_loop)]
+#[allow(clippy::needless_range_loop)] // dp/mv used as both indices and math values
 pub fn lmr_table() -> LmrTable {
     let mut t = [[[0i32; LMR_MAX_MOVES]; MAX_PLY]; 2];
     for dp in 0..MAX_PLY {
@@ -85,7 +85,6 @@ const FUTILITY_MARGIN: [i32; 7] = [0, 100, 160, 220, 280, 340, 400];
 // Has: TT probe, singular ext, IID, LMR, PVS, currmove.
 // ============================================================================
 
-#[allow(clippy::too_many_arguments)]
 pub fn search_root(
     pos: &mut Position,
     searcher: &mut Searcher,
@@ -474,7 +473,6 @@ pub fn search_root(
 // Search — main interior-node search (alpha-beta with pruning and extensions)
 // ============================================================================
 
-#[allow(clippy::too_many_arguments)]
 pub fn search(
     pos: &mut Position,
     searcher: &mut Searcher,
@@ -1215,7 +1213,6 @@ pub fn iterate(
 }
 
 /// Aspiration search — widens window on fail-high/fail-low
-#[allow(clippy::too_many_arguments)]
 fn widen(
     pos: &mut Position,
     searcher: &mut Searcher,
@@ -1259,7 +1256,6 @@ fn widen(
 // MultiPV — multi-principal-variation search
 // ============================================================================
 
-#[allow(clippy::too_many_arguments)]
 pub fn multi_pv(
     pos: &mut Position,
     searcher: &mut Searcher,

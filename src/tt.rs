@@ -114,7 +114,6 @@ impl TransTable {
     /// Refreshes the entry's date on hit  using an unsafe
     /// write to avoid requiring &mut self. This is safe because benign data
     /// races on TT entries are standard in chess engines (Lazy SMP).
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn retrieve(
         &self,

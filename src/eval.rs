@@ -157,11 +157,7 @@ pub fn evaluate(
     entry.key = p.hash_key;
     entry.score = score;
 
-    if p.side == WC {
-        score
-    } else {
-        -score
-    }
+    if p.side == WC { score } else { -score }
 }
 
 fn interpolate(p: &Position, e: &EvalData) -> i32 {

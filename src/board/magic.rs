@@ -22,6 +22,8 @@
 // Architecture: Fancy magic — per-square index into a shared attack database.
 // Rook database: 102400 entries, Bishop database: 5248 entries.
 
+use std::sync::OnceLock;
+
 use super::bitboard::Bitboard;
 
 // ============================================================================
@@ -33,12 +35,11 @@ struct MagicDb {
     rook: Vec<u64>,
 }
 
-static mut DB: *const MagicDb = std::ptr::null();
+static DB: OnceLock<Box<MagicDb>> = OnceLock::new();
 
 #[inline(always)]
 fn db() -> &'static MagicDb {
-    // SAFETY: init() is called once at startup before any access.
-    unsafe { &*DB }
+    DB.get().unwrap()
 }
 
 // Per-square offsets into the database arrays
@@ -401,9 +402,7 @@ pub fn init() {
         }
     }
     let db = Box::new(MagicDb { bish, rook });
-    unsafe {
-        DB = Box::into_raw(db);
-    }
+    DB.set(db).ok();
 }
 
 /// Bishop attacks for a given square and occupancy.

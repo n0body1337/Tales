@@ -18,6 +18,6 @@
 
 // movegen module — move generation, move lists, and SEE.
 
-pub mod gen;
+pub mod generate;
 pub mod movelist;
 pub mod see;

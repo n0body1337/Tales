@@ -20,8 +20,8 @@
 // Each worker thread gets its own Searcher + eval_hash + Position copy.
 // All threads share the same TransTable (benign data races, standard in chess).
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::thread;
 
 use crate::board::moves::Move;
@@ -41,7 +41,6 @@ pub struct SharedState {
 /// Run Lazy SMP search with N threads.
 /// Thread 0 is the "main" thread whose PV is used for output.
 /// Odd-numbered threads search at depth+1 for diversity.
-#[allow(clippy::too_many_arguments)]
 pub fn lazy_smp_search(
     pos: &mut Position,
     tt: &mut TransTable,
@@ -188,11 +187,11 @@ pub fn lazy_smp_search(
     let mut best_pv = [Move::NONE; 2];
 
     for (i, result) in results.iter().enumerate().take(num_threads) {
-        if let Some((dp, pv)) = result {
-            if *dp > best_depth || (*dp == best_depth && i == 0) {
-                best_depth = *dp;
-                best_pv = *pv;
-            }
+        if let Some((dp, pv)) = result
+            && (*dp > best_depth || (*dp == best_depth && i == 0))
+        {
+            best_depth = *dp;
+            best_pv = *pv;
         }
     }
 
@@ -211,7 +210,6 @@ pub fn lazy_smp_search(
 }
 
 /// Main thread iterate — prints UCI info, uses Widen-style aspiration
-#[allow(clippy::too_many_arguments)]
 fn iterate_main(
     pos: &mut Position,
     searcher: &mut Searcher,
@@ -315,7 +313,6 @@ fn iterate_main(
 }
 
 /// Silent worker thread — searches without printing, uses Widen-style aspiration
-#[allow(clippy::too_many_arguments)]
 fn iterate_silent(
     pos: &mut Position,
     searcher: &mut Searcher,
@@ -387,7 +384,6 @@ fn iterate_silent(
 }
 
 /// Widen-style aspiration search for threaded iterate — checks shared abort
-#[allow(clippy::too_many_arguments)]
 fn widen_shared(
     pos: &mut Position,
     searcher: &mut Searcher,

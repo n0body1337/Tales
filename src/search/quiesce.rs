@@ -27,7 +27,6 @@ use crate::search::ordering::*;
 use crate::tt::{self, TransTable};
 
 /// QuiesceChecks — considers captures + checks + killers (called from Search at depth=0)
-#[allow(clippy::too_many_arguments)]
 pub fn quiesce_checks(
     pos: &mut Position,
     searcher: &mut Searcher,
@@ -162,7 +161,6 @@ pub fn quiesce_checks(
 }
 
 /// QuiesceFlee — evasion search when in check (tries all moves)
-#[allow(clippy::too_many_arguments)]
 pub fn quiesce_flee(
     pos: &mut Position,
     searcher: &mut Searcher,
@@ -298,7 +296,6 @@ pub fn quiesce_flee(
 }
 
 /// Quiesce — standard quiescence (captures only, no checks)
-#[allow(clippy::too_many_arguments)]
 pub fn quiesce(
     pos: &mut Position,
     searcher: &mut Searcher,

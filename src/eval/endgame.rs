@@ -474,11 +474,7 @@ fn different_bishops(p: &Position) -> bool {
 
 /// Relative square: flips for black.
 fn rel_sq(sq: i32, sd: Color) -> i32 {
-    if sd == WC {
-        sq
-    } else {
-        sq ^ 56
-    }
+    if sd == WC { sq } else { sq ^ 56 }
 }
 
 /// Get a bitboard for a relative square.

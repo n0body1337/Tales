@@ -19,13 +19,15 @@
 // Global PST tables — initialized once, used by Position for incremental PST updates.
 // Global PST accessors — provides Position-level access to mg_pst/eg_pst tables.
 
+use std::sync::OnceLock;
+
 /// Static global PST tables [color][piece_type][square]
 struct PstTables {
     mg: [[[i32; 64]; 6]; 2],
     eg: [[[i32; 64]; 6]; 2],
 }
 
-static mut TABLES: *const PstTables = std::ptr::null();
+static TABLES: OnceLock<Box<PstTables>> = OnceLock::new();
 
 /// Initialize from EvalParams (must be called once before any Position operations).
 pub fn init(par: &super::params::EvalParams) {
@@ -33,18 +35,15 @@ pub fn init(par: &super::params::EvalParams) {
         mg: par.mg_pst,
         eg: par.eg_pst,
     });
-    unsafe {
-        TABLES = Box::into_raw(t);
-    }
+    TABLES.set(t).ok();
 }
 
 #[inline(always)]
 pub fn mg(color_idx: usize, piece_type_idx: usize, sq: usize) -> i32 {
-    // SAFETY: init() is called once at startup before any access.
-    // All indices are valid: color 0-1, piece_type 0-5, sq 0-63.
+    let t = TABLES.get().unwrap();
+    // SAFETY: All indices are valid: color 0-1, piece_type 0-5, sq 0-63.
     unsafe {
-        *(*TABLES)
-            .mg
+        *t.mg
             .get_unchecked(color_idx)
             .get_unchecked(piece_type_idx)
             .get_unchecked(sq)
@@ -53,10 +52,10 @@ pub fn mg(color_idx: usize, piece_type_idx: usize, sq: usize) -> i32 {
 
 #[inline(always)]
 pub fn eg(color_idx: usize, piece_type_idx: usize, sq: usize) -> i32 {
-    // SAFETY: init() is called once at startup before any access.
+    let t = TABLES.get().unwrap();
+    // SAFETY: All indices are valid: color 0-1, piece_type 0-5, sq 0-63.
     unsafe {
-        *(*TABLES)
-            .eg
+        *t.eg
             .get_unchecked(color_idx)
             .get_unchecked(piece_type_idx)
             .get_unchecked(sq)

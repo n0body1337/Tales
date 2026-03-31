@@ -19,9 +19,11 @@
 // Bitboard type — wraps u64 with chess-specific operations.
 // Bitboard operations and shift functions.
 
-use super::types::*;
 use std::fmt;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
+use std::sync::OnceLock;
+
+use super::types::*;
 
 // ============================================================================
 // Bitboard newtype
@@ -370,13 +372,14 @@ pub fn b_double_pawn_attacks(bb: Bitboard) -> Bitboard {
 /// Table of bitboards representing squares between two squares on a line.
 /// Computed from the standard Laser/CPW algorithm.
 /// Stored as a flattened array with indexing [sq1*64 + sq2].
-static mut BB_BETWEEN: *const [Bitboard; 64 * 64] = std::ptr::null();
+static BB_BETWEEN: OnceLock<Box<[Bitboard; 64 * 64]>> = OnceLock::new();
 
 /// Get the between-ray bitboard for two squares.
 #[inline(always)]
 pub fn between(sq1: Square, sq2: Square) -> Bitboard {
-    // SAFETY: init_between() called at startup; indices are valid squares (0-63).
-    unsafe { *(*BB_BETWEEN).get_unchecked((sq1 as usize) * 64 + sq2 as usize) }
+    let table = BB_BETWEEN.get().unwrap();
+    // SAFETY: indices are valid squares (0-63), so index < 4096.
+    unsafe { *table.get_unchecked((sq1 as usize) * 64 + sq2 as usize) }
 }
 
 /// Compute between-ray for two squares (from Laser / CPW).
@@ -406,7 +409,5 @@ pub fn init_between() {
             table[sq1 * 64 + sq2] = compute_between(sq1 as i32, sq2 as i32);
         }
     }
-    unsafe {
-        BB_BETWEEN = Box::into_raw(table);
-    }
+    BB_BETWEEN.set(table).ok();
 }

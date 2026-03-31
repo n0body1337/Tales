@@ -53,14 +53,14 @@ fn run_tests() {
     println!("Tales 1.0a");
     println!("Running perft from startpos...");
     for depth in 1..=5 {
-        let nodes = movegen::gen::perft(&mut pos, depth);
+        let nodes = movegen::generate::perft(&mut pos, depth);
         println!("  perft({depth}) = {nodes}");
     }
 
     pos.set_position("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -");
     println!("\nKiwipete perft:");
     for depth in 1..=4 {
-        let nodes = movegen::gen::perft(&mut pos, depth);
+        let nodes = movegen::generate::perft(&mut pos, depth);
         println!("  perft({depth}) = {nodes}");
     }
 

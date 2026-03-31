@@ -29,39 +29,50 @@ pub const PHA_MG: usize = 1;
 pub const DEF_EG: usize = 2;
 pub const PHA_EG: usize = 3;
 
-// Imbalance data constants
-pub const A_EXC_D: i32 = -10;
-pub const A_MIN_D: i32 = 53;
-pub const A_MAJ_D: i32 = 60;
-pub const A_TWO_D: i32 = 44;
-pub const A_ALL_D: i32 = 80;
+// Crafty-style material imbalance table entries.
+// Each variant maps to a tunable EvalParams field (and its negation).
+#[derive(Clone, Copy)]
+enum Imb {
+    Zero, // no adjustment
+    Exc,
+    NExc, //  a_exc / -a_exc  (exchange advantage)
+    Min,
+    NMin, //  a_min / -a_min  (minor piece advantage)
+    Maj,
+    NMaj, //  a_maj / -a_maj  (major piece advantage)
+    Two,
+    NTwo, //  a_two / -a_two  (two minors vs rook)
+    All,
+    NAll, //  a_all / -a_all  (combined advantage)
+}
 
-const IMBALANCE_DATA: [[i32; 9]; 9] = [
-    [-A_ALL_D, -A_ALL_D, -A_ALL_D, -A_ALL_D, -A_MAJ_D, 0, 0, 0, 0],
-    [-A_ALL_D, -A_ALL_D, -A_ALL_D, -A_ALL_D, -A_MAJ_D, 0, 0, 0, 0],
-    [-A_ALL_D, -A_ALL_D, -A_ALL_D, -A_ALL_D, -A_MAJ_D, 0, 0, 0, 0],
-    [
-        -A_ALL_D, -A_ALL_D, -A_ALL_D, -A_ALL_D, -A_MAJ_D, -A_EXC_D, A_TWO_D, 0, 0,
-    ],
-    [
-        -A_MIN_D, -A_MIN_D, -A_MIN_D, -A_MIN_D, 0, A_MIN_D, A_MIN_D, A_MIN_D, A_MIN_D,
-    ],
-    [
-        0, 0, -A_TWO_D, A_EXC_D, A_MAJ_D, A_ALL_D, A_ALL_D, A_ALL_D, A_ALL_D,
-    ],
-    [0, 0, 0, 0, A_MAJ_D, A_ALL_D, A_ALL_D, A_ALL_D, A_ALL_D],
-    [0, 0, 0, 0, A_MAJ_D, A_ALL_D, A_ALL_D, A_ALL_D, A_ALL_D],
-    [0, 0, 0, 0, A_MAJ_D, A_ALL_D, A_ALL_D, A_ALL_D, A_ALL_D],
+use Imb::*;
+
+/// Material imbalance table — indexed by [major_balance+4][minor_balance+4].
+///
+/// Major balance = R_diff + 2·Q_diff, minor balance = N_diff + B_diff.
+/// Both clamped to [-4, +4], then offset by +4 to index this 9×9 grid.
+///
+///   Columns: minor balance  -4 ..  0  .. +4
+///   Rows:    major balance  -4 ..  0  .. +4
+#[rustfmt::skip]
+const IMBALANCE: [[Imb; 9]; 9] = [
+    //       -4     -3     -2     -1      0     +1     +2     +3     +4
+    [     NAll,  NAll,  NAll,  NAll,  NMaj,  Zero,  Zero,  Zero,  Zero], // -4  major
+    [     NAll,  NAll,  NAll,  NAll,  NMaj,  Zero,  Zero,  Zero,  Zero], // -3
+    [     NAll,  NAll,  NAll,  NAll,  NMaj,  Zero,  Zero,  Zero,  Zero], // -2
+    [     NAll,  NAll,  NAll,  NAll,  NMaj,  NExc,   Two,  Zero,  Zero], // -1
+    [     NMin,  NMin,  NMin,  NMin,  Zero,   Min,   Min,   Min,   Min], //  0  even
+    [     Zero,  Zero,  NTwo,   Exc,   Maj,   All,   All,   All,   All], // +1
+    [     Zero,  Zero,  Zero,  Zero,   Maj,   All,   All,   All,   All], // +2
+    [     Zero,  Zero,  Zero,  Zero,   Maj,   All,   All,   All,   All], // +3
+    [     Zero,  Zero,  Zero,  Zero,   Maj,   All,   All,   All,   All], // +4  major
 ];
 
 /// Mirrors a square for perspective (black sees rank from opposite side).
 #[inline(always)]
 pub fn rel_sq(sq: usize, sd: Color) -> usize {
-    if sd == WC {
-        sq
-    } else {
-        sq ^ 56
-    }
+    if sd == WC { sq } else { sq ^ 56 }
 }
 
 #[derive(Clone)]
@@ -585,30 +596,20 @@ impl EvalParams {
             self.rp_table[i] = pst::ADJ[i] * self.r_op;
         }
 
-        for (i, row) in IMBALANCE_DATA.iter().enumerate() {
-            for (j, &d) in row.iter().enumerate() {
-                self.imbalance[i][j] = if d == A_EXC_D {
-                    self.a_exc
-                } else if d == -A_EXC_D {
-                    -self.a_exc
-                } else if d == A_MIN_D {
-                    self.a_min
-                } else if d == -A_MIN_D {
-                    -self.a_min
-                } else if d == A_MAJ_D {
-                    self.a_maj
-                } else if d == -A_MAJ_D {
-                    -self.a_maj
-                } else if d == A_TWO_D {
-                    self.a_two
-                } else if d == -A_TWO_D {
-                    -self.a_two
-                } else if d == A_ALL_D {
-                    self.a_all
-                } else if d == -A_ALL_D {
-                    -self.a_all
-                } else {
-                    d
+        for (i, row) in IMBALANCE.iter().enumerate() {
+            for (j, &entry) in row.iter().enumerate() {
+                self.imbalance[i][j] = match entry {
+                    Zero => 0,
+                    Exc => self.a_exc,
+                    NExc => -self.a_exc,
+                    Min => self.a_min,
+                    NMin => -self.a_min,
+                    Maj => self.a_maj,
+                    NMaj => -self.a_maj,
+                    Two => self.a_two,
+                    NTwo => -self.a_two,
+                    All => self.a_all,
+                    NAll => -self.a_all,
                 };
             }
         }

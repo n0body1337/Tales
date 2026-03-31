@@ -19,6 +19,8 @@
 // Attack generation — leaper attack tables + slider wrappers.
 // Matches cBitBoard pawn/knight/king attack tables and POS::AttacksFrom/AttacksTo/Attacked.
 
+use std::sync::OnceLock;
+
 use super::bitboard::*;
 use super::magic;
 use super::types::*;
@@ -33,12 +35,11 @@ struct LeaperTables {
     king_attacks: [Bitboard; 64],
 }
 
-static mut TABLES: *const LeaperTables = std::ptr::null();
+static TABLES: OnceLock<Box<LeaperTables>> = OnceLock::new();
 
 #[inline(always)]
 fn tables() -> &'static LeaperTables {
-    // SAFETY: init() is called once at startup before any access.
-    unsafe { &*TABLES }
+    TABLES.get().unwrap()
 }
 
 /// Initialize leaper attack tables. Called from board::init().
@@ -76,9 +77,7 @@ pub fn init() {
         }
         t
     });
-    unsafe {
-        TABLES = Box::into_raw(t);
-    }
+    TABLES.set(t).ok();
 }
 
 // ============================================================================
