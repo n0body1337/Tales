@@ -16,7 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// EvalData — per-evaluation scratch data, matching eData struct.
+//! Per-evaluation scratch data — accumulates attack maps, king attack counts, and score pairs.
 
 use crate::board::attacks;
 use crate::board::bitboard::*;
@@ -37,44 +37,63 @@ pub struct EvalData {
     pub ev_att: [Bitboard; 2], // non-pawn, non-king attacks
 }
 
-impl EvalData {
-    pub fn new() -> Self {
-        // SAFETY: All fields are numeric (i32) or Bitboard(u64), where zero
-        // is a valid value. This avoids 11 individual field initializations.
-        unsafe { std::mem::zeroed() }
+impl Default for EvalData {
+    fn default() -> Self {
+        Self {
+            mg: [0; 2],
+            eg: [0; 2],
+            mg_pawns: [0; 2],
+            eg_pawns: [0; 2],
+            att: [0; 2],
+            wood: [0; 2],
+            p_takes: [Bitboard::EMPTY; 2],
+            two_pawns_take: [Bitboard::EMPTY; 2],
+            p_can_take: [Bitboard::EMPTY; 2],
+            all_att: [Bitboard::EMPTY; 2],
+            ev_att: [Bitboard::EMPTY; 2],
+        }
     }
 }
 
-/// Init pawn helper bitboards and attack maps.
-pub fn init_pawn_data(p: &Position, e: &mut EvalData) {
-    e.p_takes[WC.index()] = w_pawn_attacks(p.pawns(WC));
-    e.p_takes[BC.index()] = b_pawn_attacks(p.pawns(BC));
-    e.p_can_take[WC.index()] = fill_north(e.p_takes[WC.index()]);
-    e.p_can_take[BC.index()] = fill_south(e.p_takes[BC.index()]);
-    e.two_pawns_take[WC.index()] = w_double_pawn_attacks(p.pawns(WC));
-    e.two_pawns_take[BC.index()] = b_double_pawn_attacks(p.pawns(BC));
+impl EvalData {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    // Init attack maps with pawn attacks + king attacks
-    e.all_att[WC.index()] = e.p_takes[WC.index()] | attacks::king_attacks(p.king_sq(WC));
-    e.all_att[BC.index()] = e.p_takes[BC.index()] | attacks::king_attacks(p.king_sq(BC));
-    e.ev_att[WC.index()] = Bitboard::EMPTY;
-    e.ev_att[BC.index()] = Bitboard::EMPTY;
-}
+    /// Add midgame/endgame score for a side.
+    #[inline(always)]
+    pub fn add(&mut self, sd: Color, mg_val: i32, eg_val: i32) {
+        self.mg[sd.index()] += mg_val;
+        self.eg[sd.index()] += eg_val;
+    }
 
-#[inline(always)]
-pub fn add(e: &mut EvalData, sd: Color, mg_val: i32, eg_val: i32) {
-    e.mg[sd.index()] += mg_val;
-    e.eg[sd.index()] += eg_val;
-}
+    /// Add the same value to both mg and eg for a side.
+    #[inline(always)]
+    pub fn add_both(&mut self, sd: Color, val: i32) {
+        self.mg[sd.index()] += val;
+        self.eg[sd.index()] += val;
+    }
 
-#[inline(always)]
-pub fn add_both(e: &mut EvalData, sd: Color, val: i32) {
-    e.mg[sd.index()] += val;
-    e.eg[sd.index()] += val;
-}
+    /// Add midgame/endgame pawn score for a side.
+    #[inline(always)]
+    pub fn add_pawns(&mut self, sd: Color, mg_val: i32, eg_val: i32) {
+        self.mg_pawns[sd.index()] += mg_val;
+        self.eg_pawns[sd.index()] += eg_val;
+    }
 
-#[inline(always)]
-pub fn add_pawns(e: &mut EvalData, sd: Color, mg_val: i32, eg_val: i32) {
-    e.mg_pawns[sd.index()] += mg_val;
-    e.eg_pawns[sd.index()] += eg_val;
+    /// Init pawn helper bitboards and attack maps.
+    pub fn init_pawn_data(&mut self, p: &Position) {
+        self.p_takes[WC.index()] = w_pawn_attacks(p.pawns(WC));
+        self.p_takes[BC.index()] = b_pawn_attacks(p.pawns(BC));
+        self.p_can_take[WC.index()] = fill_north(self.p_takes[WC.index()]);
+        self.p_can_take[BC.index()] = fill_south(self.p_takes[BC.index()]);
+        self.two_pawns_take[WC.index()] = w_double_pawn_attacks(p.pawns(WC));
+        self.two_pawns_take[BC.index()] = b_double_pawn_attacks(p.pawns(BC));
+
+        // Init attack maps with pawn attacks + king attacks
+        self.all_att[WC.index()] = self.p_takes[WC.index()] | attacks::king_attacks(p.king_sq(WC));
+        self.all_att[BC.index()] = self.p_takes[BC.index()] | attacks::king_attacks(p.king_sq(BC));
+        self.ev_att[WC.index()] = Bitboard::EMPTY;
+        self.ev_att[BC.index()] = Bitboard::EMPTY;
+    }
 }

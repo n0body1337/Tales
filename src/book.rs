@@ -16,7 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Opening book module — Polyglot `.bin` format reader.
+//! Opening book module — Polyglot `.bin` format reader (internal and external).
 pub mod external;
 pub mod internal;
 pub mod polyglot;

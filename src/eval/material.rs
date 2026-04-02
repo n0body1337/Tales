@@ -16,35 +16,35 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Material evaluation — piece counting, imbalance, and adjustments.
+//! Material evaluation — piece counting, imbalance adjustments, and material balance.
 
-use super::eval_data::{self, EvalData};
+use super::eval_data::EvalData;
 use super::params::EvalParams;
 use crate::board::position::Position;
 use crate::board::types::*;
 
+/// Evaluate material adjustments — closed position knight bonus, open position rook
+/// bonus, pair bonuses, and elephantiasis correction.
 pub fn evaluate_material(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
     let op = !sd;
-    let si = sd.index();
-    let oi = op.index();
 
-    let mut tmp = par.np_table[p.cnt[si][P.index()] as usize] * p.cnt[si][N.index()]
-        - par.rp_table[p.cnt[si][P.index()] as usize] * p.cnt[si][R.index()];
+    let mut tmp = par.np_table[p.count(sd, P) as usize] * p.count(sd, N)
+        - par.rp_table[p.count(sd, P) as usize] * p.count(sd, R);
 
-    if p.cnt[si][N.index()] > 1 {
+    if p.count(sd, N) > 1 {
         tmp += par.n_pair;
     }
-    if p.cnt[si][R.index()] > 1 {
+    if p.count(sd, R) > 1 {
         tmp += par.r_pair;
     }
-    if p.cnt[si][B.index()] > 1 {
+    if p.count(sd, B) > 1 {
         tmp += par.b_pair;
     }
 
     // Elephantiasis correction for queen
-    if p.cnt[si][Q.index()] > 0 {
-        tmp -= par.eleph * (p.cnt[oi][N.index()] + p.cnt[oi][B.index()]);
+    if p.count(sd, Q) > 0 {
+        tmp -= par.eleph * (p.count(op, N) + p.count(op, B));
     }
 
-    eval_data::add_both(e, sd, tmp);
+    e.add_both(sd, tmp);
 }

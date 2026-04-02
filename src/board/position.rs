@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Position — board state, FEN parsing, make/unmake move.
-// Board position representation — FEN parsing, make/unmake move, draw detection.
+//! Board position representation — FEN parsing, make/unmake move, and draw detection.
 
 use super::attacks;
 use super::bitboard::*;
@@ -31,25 +30,21 @@ use super::zobrist;
 
 #[derive(Clone, Copy, Default)]
 pub struct Undo {
-    pub captured_type: PieceType, // mTtpUd
-    pub castling: CastlingRights, // mCFlagsUd
-    pub ep_sq: Square,            // mEpSqUd
-    pub rev_moves: i32,           // mRevMovesUd
-    pub hash_key: u64,            // mHashKeyUd
-    pub pawn_key: u64,            // mPawnKeyUd
-    pub mg_sc: [i32; 2],          // PST score save
-    pub eg_sc: [i32; 2],          // PST score save
+    pub captured_type: PieceType,
+    pub castling: CastlingRights,
+    pub ep_sq: Square,
+    pub rev_moves: i32,
+    pub hash_key: u64,
+    pub pawn_key: u64,
+    pub mg_sc: [i32; 2],
+    pub eg_sc: [i32; 2],
 }
 
 impl Undo {
-    /// Create a zero-initialized Undo struct — cheaper than `Default` on the hot path.
-    /// Uses `zeroed()` which is valid for this all-primitives struct and avoids
-    /// the clippy `uninit_assumed_init` lint.
+    /// Create a zero-initialized Undo struct.
     #[inline(always)]
-    pub fn uninit() -> Self {
-        // SAFETY: Undo contains only primitive types (i32, u64, arrays of i32).
-        // All-zero is a valid bit pattern for all of these types.
-        unsafe { std::mem::zeroed() }
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -85,12 +80,14 @@ pub struct Position {
     pub pawn_key: u64,            // pawn hash key
 
     // === Cold fields (eval-only) ===
-    pub cnt: [[i32; 6]; 2], // piece counts [color][piece_type]
-    pub mg_sc: [i32; 2],    // midgame PST score per side
-    pub eg_sc: [i32; 2],    // endgame PST score per side
+    cnt: [[i32; 6]; 2],  // piece counts [color][piece_type] — use count() accessor
+    pub mg_sc: [i32; 2], // midgame PST score per side
+    pub eg_sc: [i32; 2], // endgame PST score per side
 
-    // Repetition list — rarely accessed (only during is_draw)
-    pub rep_list: [u64; 256],
+    // Repetition list — holds hash keys for draw detection.
+    // 1024 entries is generous enough to cover the longest legal games
+    // plus UCI "position ... moves" lists.
+    pub rep_list: [u64; 1024],
 }
 
 impl Default for Position {
@@ -117,7 +114,7 @@ impl Position {
             cnt: [[0; 6]; 2],
             mg_sc: [0; 2],
             eg_sc: [0; 2],
-            rep_list: [0; 256],
+            rep_list: [0; 1024],
         }
     }
 
@@ -175,6 +172,11 @@ impl Position {
     #[inline(always)]
     pub fn king_sq(&self, sd: Color) -> Square {
         self.king_sq[sd.index()]
+    }
+    /// Piece count for a given side and piece type.
+    #[inline(always)]
+    pub fn count(&self, sd: Color, pt: PieceType) -> i32 {
+        self.cnt[sd.index()][pt.index()]
     }
     #[inline(always)]
     pub fn tp_on_sq(&self, sq: Square) -> PieceType {
@@ -281,7 +283,13 @@ impl Position {
                             crate::eval::global_pst::eg(color.index(), tp.index(), sq);
                         j += 1;
                     } else {
-                        // Parse error — reset to start position
+                        // Parse error — reset to the starting position.
+                        // This recursive call is safe: START_POS is a known-good FEN
+                        // constant that always parses successfully, so no infinite loop.
+                        println!(
+                            "info string error: invalid FEN character '{}', falling back to startpos",
+                            ch
+                        );
                         self.set_position(START_POS);
                         return;
                     }
@@ -391,8 +399,8 @@ impl Position {
         u.mg_sc = self.mg_sc;
         u.eg_sc = self.eg_sc;
 
-        // Update repetition list and reversible moves
-        self.rep_list[self.head] = self.hash_key;
+        // Update repetition list (wrapping within buffer bounds)
+        self.rep_list[self.head % self.rep_list.len()] = self.hash_key;
         self.head += 1;
         if ftp == P || ttp != NO_TP {
             self.rev_moves = 0;
@@ -499,7 +507,7 @@ impl Position {
                 self.pawn_key ^= zobrist::piece_key(cap_pawn, cap_sq);
                 self.cl_bb[op.index()] ^= Bitboard::from_sq(cap_sq);
                 self.tp_bb[P.index()] ^= Bitboard::from_sq(cap_sq);
-                self.phase -= PH_VALUE[P.index()];
+                // Note: no phase adjustment needed — PH_VALUE[Pawn] == 0.
                 self.cnt[op.index()][P.index()] -= 1;
                 self.mg_sc[op.index()] -=
                     crate::eval::global_pst::mg(op.index(), P.index(), cap_sq as usize);
@@ -548,6 +556,7 @@ impl Position {
     /// Unmake a move, restoring state from undo data.
     #[inline]
     pub fn undo_move(&mut self, mv: Move, u: &Undo) {
+        debug_assert!(self.head > 0, "undo_move: head underflow");
         let sd = !self.side; // the side that made the move
         let op = !sd;
         let fsq = mv.from_sq();
@@ -620,7 +629,7 @@ impl Position {
                 unsafe { *self.pc.get_unchecked_mut(tsq as usize) = Piece::new(op, P) };
                 self.cl_bb[op.index()] ^= Bitboard::from_sq(tsq);
                 self.tp_bb[P.index()] ^= Bitboard::from_sq(tsq);
-                self.phase += PH_VALUE[P.index()];
+                // Note: no phase adjustment needed — PH_VALUE[Pawn] == 0.
                 self.cnt[op.index()][P.index()] += 1;
             }
 
@@ -648,7 +657,7 @@ impl Position {
         u.ep_sq = self.ep_sq;
         u.hash_key = self.hash_key;
 
-        self.rep_list[self.head] = self.hash_key;
+        self.rep_list[self.head % self.rep_list.len()] = self.hash_key;
         self.head += 1;
         self.rev_moves += 1;
 
@@ -663,6 +672,7 @@ impl Position {
     /// Undo null move.
     #[inline]
     pub fn undo_null(&mut self, u: &Undo) {
+        debug_assert!(self.head > 0, "undo_null: head underflow");
         self.ep_sq = u.ep_sq;
         self.hash_key = u.hash_key;
         self.head -= 1;
@@ -682,14 +692,12 @@ impl Position {
             return true;
         }
 
-        // Repetition
+        // Repetition detection — walk back through the rep_list in steps of 2.
         if self.rev_moves >= 4 {
             let mut i = 4i32;
             while i <= self.rev_moves {
-                // SAFETY: head >= i because rev_moves tracks valid history depth,
-                // and rep_list has 256 entries — head never exceeds this in practice
-                if self.hash_key == unsafe { *self.rep_list.get_unchecked(self.head - i as usize) }
-                {
+                let idx = (self.head - i as usize) % self.rep_list.len();
+                if self.hash_key == self.rep_list[idx] {
                     return true;
                 }
                 i += 2;
@@ -697,19 +705,11 @@ impl Position {
         }
 
         // Insufficient material (no major pieces)
-        if self.cnt[0][Q.index()]
-            + self.cnt[1][Q.index()]
-            + self.cnt[0][R.index()]
-            + self.cnt[1][R.index()]
-            == 0
-        {
+        if self.count(WC, Q) + self.count(BC, Q) + self.count(WC, R) + self.count(BC, R) == 0 {
             // Guard against detecting draw in illegal positions
-            if !self.illegal() && self.cnt[0][P.index()] + self.cnt[1][P.index()] == 0 {
+            if !self.illegal() && self.count(WC, P) + self.count(BC, P) == 0 {
                 // KK or KmK
-                if self.cnt[0][N.index()]
-                    + self.cnt[1][N.index()]
-                    + self.cnt[0][B.index()]
-                    + self.cnt[1][B.index()]
+                if self.count(WC, N) + self.count(BC, N) + self.count(WC, B) + self.count(BC, B)
                     <= 1
                 {
                     return true;
@@ -717,17 +717,13 @@ impl Position {
             }
 
             // KPK draws
-            if self.cnt[0][B.index()]
-                + self.cnt[1][B.index()]
-                + self.cnt[0][N.index()]
-                + self.cnt[1][N.index()]
-                == 0
-                && self.cnt[0][P.index()] + self.cnt[1][P.index()] == 1
+            if self.count(WC, B) + self.count(BC, B) + self.count(WC, N) + self.count(BC, N) == 0
+                && self.count(WC, P) + self.count(BC, P) == 1
             {
-                if self.cnt[0][P.index()] == 1 {
+                if self.count(WC, P) == 1 {
                     return self.kpk_draw(WC);
                 }
-                if self.cnt[1][P.index()] == 1 {
+                if self.count(BC, P) == 1 {
                     return self.kpk_draw(BC);
                 }
             }

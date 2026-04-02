@@ -16,12 +16,12 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Global PST tables — initialized once, used by Position for incremental PST updates.
-// Global PST accessors — provides Position-level access to mg_pst/eg_pst tables.
+//! Global PST tables — initialized once, used by [`Position`](crate::board::position::Position)
+//! for incremental PST updates.
 
 use std::sync::OnceLock;
 
-/// Static global PST tables [color][piece_type][square]
+/// Static global PST tables \[color\]\[piece_type\]\[square\]
 struct PstTables {
     mg: [[[i32; 64]; 6]; 2],
     eg: [[[i32; 64]; 6]; 2],
@@ -41,23 +41,11 @@ pub fn init(par: &super::params::EvalParams) {
 #[inline(always)]
 pub fn mg(color_idx: usize, piece_type_idx: usize, sq: usize) -> i32 {
     let t = TABLES.get().unwrap();
-    // SAFETY: All indices are valid: color 0-1, piece_type 0-5, sq 0-63.
-    unsafe {
-        *t.mg
-            .get_unchecked(color_idx)
-            .get_unchecked(piece_type_idx)
-            .get_unchecked(sq)
-    }
+    t.mg[color_idx][piece_type_idx][sq]
 }
 
 #[inline(always)]
 pub fn eg(color_idx: usize, piece_type_idx: usize, sq: usize) -> i32 {
     let t = TABLES.get().unwrap();
-    // SAFETY: All indices are valid: color 0-1, piece_type 0-5, sq 0-63.
-    unsafe {
-        *t.eg
-            .get_unchecked(color_idx)
-            .get_unchecked(piece_type_idx)
-            .get_unchecked(sq)
-    }
+    t.eg[color_idx][piece_type_idx][sq]
 }

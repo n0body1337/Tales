@@ -16,10 +16,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Pawn hash table — caches pawn structure evaluation results.
-// Per-engine pawn hash table.
+//! Pawn hash table — caches pawn structure evaluation results per engine instance.
 
-pub const PAWN_HASH_SIZE: usize = 512 * 512 / 4; // 65536 entries
+pub const PAWN_HASH_SIZE: usize = 1 << 16; // 65536 entries
 const PAWN_HASH_MASK: usize = PAWN_HASH_SIZE - 1;
 
 #[derive(Clone, Copy, Default)]
@@ -40,19 +39,15 @@ impl PawnHash {
         }
     }
 
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
-        for entry in &mut self.table {
-            *entry = PawnHashEntry::default();
-        }
+        self.table.fill(PawnHashEntry::default());
     }
 
     /// Try to retrieve cached pawn evaluation. Returns Some((mg, eg)) on hit.
     #[inline]
     pub fn retrieve(&self, pawn_key: u64) -> Option<(i32, i32)> {
         let addr = (pawn_key as usize) & PAWN_HASH_MASK;
-        // SAFETY: addr is masked with PAWN_HASH_MASK, always < PAWN_HASH_SIZE
-        let entry = unsafe { self.table.get_unchecked(addr) };
+        let entry = &self.table[addr];
         if entry.key == pawn_key {
             Some((entry.mg_pawns, entry.eg_pawns))
         } else {
@@ -64,8 +59,7 @@ impl PawnHash {
     #[inline]
     pub fn store(&mut self, pawn_key: u64, mg_pawns: i32, eg_pawns: i32) {
         let addr = (pawn_key as usize) & PAWN_HASH_MASK;
-        // SAFETY: addr is masked with PAWN_HASH_MASK, always < PAWN_HASH_SIZE
-        let entry = unsafe { self.table.get_unchecked_mut(addr) };
+        let entry = &mut self.table[addr];
         entry.key = pawn_key;
         entry.mg_pawns = mg_pawns;
         entry.eg_pawns = eg_pawns;

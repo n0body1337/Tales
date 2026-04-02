@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Pre-computed bitmasks — adjacent files, passed pawn masks, pawn support masks.
-// Matches cMask class.
+//! Pre-computed bitmasks — adjacent files, passed pawn masks, and pawn support masks.
 
 use std::sync::OnceLock;
 

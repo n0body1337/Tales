@@ -16,7 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Core chess types — enums and constants.
+//! Core chess types — color, piece, square, and castling enums with associated constants.
 
 use std::fmt;
 use std::ops::Not;
@@ -25,6 +25,7 @@ use std::ops::Not;
 // Color
 // ============================================================================
 
+/// Side to move — White or Black.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Color {
@@ -32,7 +33,9 @@ pub enum Color {
     Black = 1,
 }
 
+/// White color shorthand.
 pub const WC: Color = Color::White;
+/// Black color shorthand.
 pub const BC: Color = Color::Black;
 
 impl Not for Color {
@@ -47,9 +50,16 @@ impl Not for Color {
 }
 
 impl Color {
+    /// Returns the index (0 for White, 1 for Black) for array indexing.
     #[inline(always)]
     pub fn index(self) -> usize {
         self as usize
+    }
+
+    /// Mirrors a square for perspective — Black sees the board from the opposite side.
+    #[inline(always)]
+    pub fn rel_sq(self, sq: i32) -> i32 {
+        if self == WC { sq } else { sq ^ 56 }
     }
 }
 
@@ -66,6 +76,7 @@ impl fmt::Display for Color {
 // PieceType
 // ============================================================================
 
+/// Piece type without color information.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum PieceType {
@@ -88,25 +99,28 @@ pub const K: PieceType = PieceType::King;
 pub const NO_TP: PieceType = PieceType::None;
 
 impl PieceType {
+    /// Returns the index (0..=6) for array indexing.
     #[inline(always)]
     pub fn index(self) -> usize {
         self as usize
     }
 
+    /// Constructs a `PieceType` from a raw index.
     #[inline(always)]
     pub fn from_index(idx: usize) -> PieceType {
         debug_assert!(idx <= 6);
-        // SAFETY: repr(u8) enum values 0..=6 match indices
+        // SAFETY: repr(u8) enum values 0..=6 match all valid indices.
         unsafe { std::mem::transmute(idx as u8) }
     }
 }
 
 // ============================================================================
-// Piece (color + type combined, matches ePiece encoding)
-// Piece encoding: piece = (type << 1) | color
-// So WP=0, BP=1, WN=2, BN=3, WB=4, BB=5, WR=6, BR=7, WQ=8, BQ=9, WK=10, BK=11, NO_PC=12
+// Piece
 // ============================================================================
 
+/// Combined color + piece type, encoded as `(type << 1) | color`.
+///
+/// WP=0, BP=1, WN=2, BN=3, WB=4, BB=5, WR=6, BR=7, WQ=8, BQ=9, WK=10, BK=11, None=12.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Piece {
@@ -125,6 +139,7 @@ pub enum Piece {
     None = 12,
 }
 
+/// Sentinel for an empty square.
 pub const NO_PC: Piece = Piece::None;
 
 impl Piece {
@@ -135,10 +150,11 @@ impl Piece {
         Piece::from_index(((tp as u8) << 1) | (color as u8))
     }
 
+    /// Constructs a `Piece` from a raw index.
     #[inline(always)]
     pub fn from_index(idx: u8) -> Piece {
         debug_assert!(idx <= 12);
-        // SAFETY: repr(u8) values 0..=12
+        // SAFETY: repr(u8) enum values 0..=12 match all valid indices.
         unsafe { std::mem::transmute(idx) }
     }
 
@@ -158,6 +174,7 @@ impl Piece {
         PieceType::from_index((self as u8 >> 1) as usize)
     }
 
+    /// Returns the raw index (0..=12) for array indexing.
     #[inline(always)]
     pub fn index(self) -> usize {
         self as usize
@@ -165,11 +182,13 @@ impl Piece {
 }
 
 // ============================================================================
-// Square  (0 = A1, 7 = H1, 56 = A8, 63 = H8, 64 = NO_SQ)
+// Square
 // ============================================================================
 
+/// Square index: 0 = A1, 7 = H1, 56 = A8, 63 = H8, 64 = NO_SQ.
 pub type Square = i32;
 
+/// Named square constants for the 64-square board.
 pub const A1: Square = 0;
 pub const B1: Square = 1;
 pub const C1: Square = 2;
@@ -186,6 +205,7 @@ pub const E2: Square = 12;
 pub const F2: Square = 13;
 pub const G2: Square = 14;
 pub const H2: Square = 15;
+#[allow(dead_code)]
 pub const A3: Square = 16;
 pub const B3: Square = 17;
 pub const C3: Square = 18;
@@ -193,6 +213,7 @@ pub const D3: Square = 19;
 pub const E3: Square = 20;
 pub const F3: Square = 21;
 pub const G3: Square = 22;
+#[allow(dead_code)]
 pub const H3: Square = 23;
 pub const A4: Square = 24;
 pub const B4: Square = 25;
@@ -202,6 +223,7 @@ pub const E4: Square = 28;
 pub const F4: Square = 29;
 pub const G4: Square = 30;
 pub const H4: Square = 31;
+#[allow(dead_code)]
 pub const A5: Square = 32;
 pub const B5: Square = 33;
 pub const C5: Square = 34;
@@ -221,7 +243,9 @@ pub const H6: Square = 47;
 pub const A7: Square = 48;
 pub const B7: Square = 49;
 pub const C7: Square = 50;
+#[allow(dead_code)]
 pub const D7: Square = 51;
+#[allow(dead_code)]
 pub const E7: Square = 52;
 pub const F7: Square = 53;
 pub const G7: Square = 54;
@@ -236,16 +260,19 @@ pub const G8: Square = 62;
 pub const H8: Square = 63;
 pub const NO_SQ: Square = 64;
 
+/// Returns the file (0–7) of a square.
 #[inline(always)]
 pub fn file_of(sq: Square) -> i32 {
     sq & 7
 }
 
+/// Returns the rank (0–7) of a square.
 #[inline(always)]
 pub fn rank_of(sq: Square) -> i32 {
     sq >> 3
 }
 
+/// Constructs a square index from file and rank (both 0–7).
 #[inline(always)]
 pub fn sq(file: i32, rank: i32) -> Square {
     (rank << 3) | file
@@ -255,24 +282,37 @@ pub fn sq(file: i32, rank: i32) -> Square {
 // Castling Rights (bit flags)
 // ============================================================================
 
+/// Castling rights represented as a bitmask.
 pub type CastlingRights = i32;
 
+/// White kingside castling.
 pub const W_KS: CastlingRights = 1;
+/// White queenside castling.
 pub const W_QS: CastlingRights = 2;
+/// Black kingside castling.
 pub const B_KS: CastlingRights = 4;
+/// Black queenside castling.
 pub const B_QS: CastlingRights = 8;
+/// All four castling rights combined.
 pub const ALL_CASTLING: CastlingRights = W_KS | W_QS | B_KS | B_QS;
 
 // ============================================================================
 // Global constants for piece and castling data
 // ============================================================================
 
+/// Maximum search depth in plies.
 pub const MAX_PLY: usize = 64;
+/// Maximum legal moves in any position (generous upper bound).
 pub const MAX_MOVES: usize = 256;
+/// Infinity score sentinel.
 pub const INF: i32 = 32767;
+/// Checkmate score baseline.
 pub const MATE: i32 = 32000;
+/// Scores above this threshold are treated as mate scores.
 pub const MAX_EVAL: i32 = 29999;
+/// History table saturation threshold.
 pub const MAX_HIST: i32 = 1 << 15;
+/// Maximum PV line length for display.
 pub const MAX_PV: usize = 12;
 
 /// Piece type values for SEE and delta pruning (index by PieceType)
@@ -281,8 +321,9 @@ pub const TP_VALUE: [i32; 7] = [100, 325, 325, 500, 1000, 0, 0];
 /// Phase values per piece type (used for game phase calculation)
 pub const PH_VALUE: [i32; 7] = [0, 1, 1, 2, 4, 0, 0];
 
-/// Castling mask table — initialized at startup
-/// msCastleMask[sq] ANDed with current castling rights after any move from/to sq
+/// Castling mask table — initialized at startup.
+///
+/// `castle_mask(sq)` is ANDed with current castling rights after any move from/to `sq`.
 static CASTLE_MASK_TABLE: std::sync::OnceLock<[CastlingRights; 64]> = std::sync::OnceLock::new();
 
 /// Get the castling mask for a given square.
@@ -294,7 +335,7 @@ pub fn castle_mask(sq: i32) -> CastlingRights {
         .expect("init_castle_mask() not called")[sq as usize]
 }
 
-/// Initialize the castling mask table
+/// Initializes the castling mask table. Must be called once at startup.
 pub fn init_castle_mask() {
     CASTLE_MASK_TABLE
         .set({
@@ -310,7 +351,7 @@ pub fn init_castle_mask() {
         .ok();
 }
 
-/// Format a square as algebraic notation (e.g., "e4")
+/// Formats a square as algebraic notation (e.g., `"e4"`), or `"-"` for [`NO_SQ`].
 pub fn sq_to_string(sq: Square) -> String {
     if sq == NO_SQ {
         return "-".to_string();
@@ -324,10 +365,12 @@ pub fn sq_to_string(sq: Square) -> String {
 // Start position FEN
 // ============================================================================
 
+/// FEN string for the standard chess starting position.
 pub const START_POS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -";
 
 // ============================================================================
-// Side random (for Zobrist: ~0u64)
+// Zobrist
 // ============================================================================
 
+/// Side-to-move Zobrist key — XORed into the hash when it is Black's turn.
 pub const SIDE_RANDOM: u64 = !0u64;

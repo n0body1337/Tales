@@ -16,6 +16,8 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
+//! Tales — a UCI chess engine written in Rust, featuring aggressive Tal-like play.
+
 mod board;
 mod book;
 mod eval;
@@ -93,15 +95,19 @@ fn run_tests() {
     pos.set_position("6k1/5ppp/8/8/8/8/8/4Q2K w - -");
     println!("\nMate-in-1 test:");
     searcher.time_limit_ms = 5000;
-    search::alphabeta::iterate(
-        &mut pos,
-        &mut searcher,
-        &mut trans,
-        &par,
-        &mut eval_hash,
-        &mut pawn_tt,
-        6,
-    );
+    {
+        let lmr = search::alphabeta::lmr_table();
+        let mut ctx = search::ordering::SearchCtx {
+            searcher: &mut searcher,
+            tt: &mut trans,
+            par: &par,
+            eval_hash: &mut eval_hash,
+            pawn_tt: &mut pawn_tt,
+            lmr,
+        };
+        search::alphabeta::iterate(&mut ctx, &mut pos, 6);
+        search::alphabeta::print_bestmove(&ctx);
+    }
 
     // Mate in 2
     pos.set_position("2bqkbn1/2pppp2/np2N3/r3P1p1/p2N2B1/5Q2/PPPPPP1P/RNB1K2R w KQ -");
@@ -109,15 +115,19 @@ fn run_tests() {
     searcher.time_limit_ms = 10000;
     trans.clear();
     searcher.clear_all();
-    search::alphabeta::iterate(
-        &mut pos,
-        &mut searcher,
-        &mut trans,
-        &par,
-        &mut eval_hash,
-        &mut pawn_tt,
-        8,
-    );
+    {
+        let lmr = search::alphabeta::lmr_table();
+        let mut ctx = search::ordering::SearchCtx {
+            searcher: &mut searcher,
+            tt: &mut trans,
+            par: &par,
+            eval_hash: &mut eval_hash,
+            pawn_tt: &mut pawn_tt,
+            lmr,
+        };
+        search::alphabeta::iterate(&mut ctx, &mut pos, 8);
+        search::alphabeta::print_bestmove(&ctx);
+    }
 
     // Startpos depth 6
     pos.set_position(board::types::START_POS);
@@ -125,15 +135,19 @@ fn run_tests() {
     searcher.time_limit_ms = 30000;
     trans.clear();
     searcher.clear_all();
-    search::alphabeta::iterate(
-        &mut pos,
-        &mut searcher,
-        &mut trans,
-        &par,
-        &mut eval_hash,
-        &mut pawn_tt,
-        6,
-    );
+    {
+        let lmr = search::alphabeta::lmr_table();
+        let mut ctx = search::ordering::SearchCtx {
+            searcher: &mut searcher,
+            tt: &mut trans,
+            par: &par,
+            eval_hash: &mut eval_hash,
+            pawn_tt: &mut pawn_tt,
+            lmr,
+        };
+        search::alphabeta::iterate(&mut ctx, &mut pos, 6);
+        search::alphabeta::print_bestmove(&ctx);
+    }
 }
 
 fn run_bench() {
@@ -190,17 +204,19 @@ fn run_bench() {
         searcher.clear_all();
 
         let t0 = Instant::now();
-        search::alphabeta::iterate(
-            &mut pos,
-            &mut searcher,
-            &mut trans,
-            &par,
-            &mut eval_hash,
-            &mut pawn_tt,
-            *depth,
-        );
+        let lmr = search::alphabeta::lmr_table();
+        let mut ctx = search::ordering::SearchCtx {
+            searcher: &mut searcher,
+            tt: &mut trans,
+            par: &par,
+            eval_hash: &mut eval_hash,
+            pawn_tt: &mut pawn_tt,
+            lmr,
+        };
+        search::alphabeta::iterate(&mut ctx, &mut pos, *depth);
+        search::alphabeta::print_bestmove(&ctx);
         let elapsed_ms = t0.elapsed().as_millis() as u64;
-        let nodes = searcher.nodes;
+        let nodes = ctx.searcher.nodes;
         let nps = if elapsed_ms > 0 {
             nodes * 1000 / elapsed_ms
         } else {

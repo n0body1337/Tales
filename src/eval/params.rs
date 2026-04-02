@@ -16,9 +16,10 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// EvalParams — all ~200 tunable parameters class.
-// Also includes derived tables (PST, mobility, passers, backward, danger)
-// computed by Recalculate().
+//! Tunable evaluation parameters (~200 weights) and derived tables.
+//!
+//! Derived tables (PST, mobility, passers, backward, danger) are computed by
+//! [`EvalParams::recalculate`].
 
 use super::pst;
 use crate::board::types::*;
@@ -48,7 +49,7 @@ enum Imb {
 
 use Imb::*;
 
-/// Material imbalance table — indexed by [major_balance+4][minor_balance+4].
+/// Material imbalance table — indexed by \[major_balance+4\]\[minor_balance+4\].
 ///
 /// Major balance = R_diff + 2·Q_diff, minor balance = N_diff + B_diff.
 /// Both clamped to [-4, +4], then offset by +4 to index this 9×9 grid.
@@ -68,12 +69,6 @@ const IMBALANCE: [[Imb; 9]; 9] = [
     [     Zero,  Zero,  Zero,  Zero,   Maj,   All,   All,   All,   All], // +3
     [     Zero,  Zero,  Zero,  Zero,   Maj,   All,   All,   All,   All], // +4  major
 ];
-
-/// Mirrors a square for perspective (black sees rank from opposite side).
-#[inline(always)]
-pub fn rel_sq(sq: usize, sd: Color) -> usize {
-    if sd == WC { sq } else { sq ^ 56 }
-}
 
 #[derive(Clone)]
 pub struct EvalParams {
@@ -176,6 +171,10 @@ pub struct EvalParams {
     pub k_no_luft: i32,
     pub k_castle: i32,
 
+    // Tempo bonus
+    pub tempo_mg: i32,
+    pub tempo_eg: i32,
+
     // Pawn structure
     pub db_mid: i32,
     pub db_end: i32,
@@ -271,16 +270,22 @@ pub struct EvalParams {
     // Strength-limiting
     pub nps_limit: i32,
     pub time_percentage: i32,
-    pub fl_weakening: bool,
+    pub is_weakening: bool,
     pub elo: i32,
 }
 
-impl EvalParams {
-    pub fn new() -> Self {
+impl Default for EvalParams {
+    fn default() -> Self {
         let mut p = Self::default_weights();
         p.recalculate();
         p.init_tables();
         p
+    }
+}
+
+impl EvalParams {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     fn default_weights() -> Self {
@@ -391,6 +396,10 @@ impl EvalParams {
             k_no_luft: -11, // king boxed in with no pawn luft
             k_castle: 32,   // castling rights bonus
 
+            // Tempo bonus — side-to-move advantage
+            tempo_mg: 14,
+            tempo_eg: 7,
+
             // Pawn structure penalties/bonuses
             db_mid: -12,   // doubled pawn (middlegame)
             db_end: -24,   // doubled pawn (endgame)
@@ -492,7 +501,7 @@ impl EvalParams {
 
             nps_limit: 0,
             time_percentage: 95,
-            fl_weakening: false,
+            is_weakening: false,
             elo: 2800,
         }
     }
@@ -547,7 +556,7 @@ impl EvalParams {
         for sq in 0..64 {
             for sd_idx in 0..2 {
                 let sd = if sd_idx == 0 { WC } else { BC };
-                let rsq = rel_sq(sq, sd);
+                let rsq = sd.rel_sq(sq as i32) as usize;
 
                 for pt in 0..6 {
                     self.mg_pst[sd_idx][pt][rsq] = (piece_val_mg[pt] * self.w_material) / 100
@@ -666,7 +675,7 @@ impl EvalParams {
         self.nps_limit = 0;
         self.eval_blur = 0;
 
-        if self.fl_weakening {
+        if self.is_weakening {
             self.nps_limit = Self::elo_to_speed(self.elo);
             self.eval_blur = Self::elo_to_blur(self.elo);
         }

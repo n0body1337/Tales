@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Attack generation — leaper attack tables + slider wrappers.
-// Matches cBitBoard pawn/knight/king attack tables and POS::AttacksFrom/AttacksTo/Attacked.
+//! Attack generation — leaper attack tables and slider attack wrappers.
 
 use std::sync::OnceLock;
 

@@ -16,9 +16,10 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Piece-Square Tables — raw data
-// All tables are from White's POV, A1=index 0, H8=index 63.
-// Black's tables are mirrored via REL_SQ macro.
+//! Piece-Square Tables — raw data.
+//!
+//! All tables are from White's perspective (A1 = index 0, H8 = index 63).
+//! Black's tables are mirrored via [`Color::rel_sq`](crate::board::types::Color::rel_sq).
 
 #[rustfmt::skip]
 pub const PST_PAWN_MG: [i32; 64] = [

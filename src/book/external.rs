@@ -16,15 +16,15 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// External Polyglot opening book — reads a `.bin` file from disk.
-//
-// This module provides disk-based polyglot book support. It reuses the
-// shared polyglot helpers from `internal.rs` (Zobrist hashing, move
-// decoding, weighted random selection) to avoid any code duplication.
-//
-// When the user sets `UseBook true` and provides a valid `MainBookFile`
-// path, this module loads the file into memory and probes it instead of
-// the internal embedded book.
+//! External Polyglot opening book — reads a `.bin` file from disk.
+//!
+//! This module provides disk-based polyglot book support. It reuses the
+//! shared polyglot helpers from [`internal`](super::internal) (Zobrist hashing, move
+//! decoding, weighted random selection) to avoid any code duplication.
+//!
+//! When the user sets `UseBook true` and provides a valid `MainBookFile`
+//! path, this module loads the file into memory and probes it instead of
+//! the internal embedded book.
 
 use crate::board::moves::Move;
 use crate::board::position::Position;

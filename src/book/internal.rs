@@ -16,18 +16,18 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Internal (embedded) Polyglot opening book — reads the compiled-in `ph-tal2.bin`.
-//
-// The binary data is standard Polyglot format: entries are sorted by key,
-// each 16 bytes big-endian:
-//   - key:    u64 BE  (Polyglot Zobrist hash)
-//   - move:   u16 BE  (from/to/promotion encoding)
-//   - weight: u16 BE
-//   - n:      u16 BE  (unused)
-//   - learn:  u16 BE  (unused)
-//
-// Position hashing, move decoding, and weighted random selection live in
-// the shared `polyglot` module.
+//! Internal (embedded) Polyglot opening book — reads the compiled-in `ph-tal2.bin`.
+//!
+//! The binary data is standard Polyglot format: entries are sorted by key,
+//! each 16 bytes big-endian:
+//! - `key`:    `u64` BE (Polyglot Zobrist hash)
+//! - `move`:   `u16` BE (from/to/promotion encoding)
+//! - `weight`: `u16` BE
+//! - `n`:      `u16` BE (unused)
+//! - `learn`:  `u16` BE (unused)
+//!
+//! Position hashing, move decoding, and weighted random selection live in
+//! the shared [`polyglot`] module.
 
 use crate::board::moves::Move;
 use crate::board::position::Position;

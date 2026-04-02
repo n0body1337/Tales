@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Distance tables — bonus/tropism/chebyshev distance.
-// Matches cDistance class.
+//! Distance tables — bonus, tropism, and Chebyshev distance lookups.
 
 use std::sync::OnceLock;
 
@@ -28,10 +27,10 @@ use super::types::*;
 // ============================================================================
 
 struct DistanceTables {
-    /// Flattened [64][64] bonus table (heap-allocated)
-    bonus: Vec<i32>,
-    /// Flattened [64][64] metric table (heap-allocated)
-    metric: Vec<i32>,
+    /// Fixed-size [64][64] bonus table (flattened, heap-allocated).
+    bonus: Box<[i32; 4096]>,
+    /// Fixed-size [64][64] metric table (flattened, heap-allocated).
+    metric: Box<[i32; 4096]>,
 }
 
 static TABLES: OnceLock<DistanceTables> = OnceLock::new();
@@ -44,8 +43,8 @@ fn tables() -> &'static DistanceTables {
 pub fn init() {
     TABLES
         .set({
-            let mut bonus = vec![0i32; 64 * 64];
-            let mut metric = vec![0i32; 64 * 64];
+            let mut bonus = Box::new([0i32; 4096]);
+            let mut metric = Box::new([0i32; 4096]);
             for sq1 in 0..64i32 {
                 for sq2 in 0..64i32 {
                     let file_dist = (file_of(sq1) - file_of(sq2)).abs();
@@ -64,22 +63,12 @@ pub fn init() {
 #[inline(always)]
 pub fn bonus(sq1: Square, sq2: Square) -> i32 {
     debug_assert!((0..64).contains(&sq1) && (0..64).contains(&sq2));
-    // SAFETY: sq1 and sq2 are valid squares (0-63), so index is always < 4096
-    unsafe {
-        *tables()
-            .bonus
-            .get_unchecked((sq1 as usize) * 64 + sq2 as usize)
-    }
+    tables().bonus[(sq1 as usize) * 64 + sq2 as usize]
 }
 
 /// Chebyshev distance between two squares.
 #[inline(always)]
 pub fn metric(sq1: Square, sq2: Square) -> i32 {
     debug_assert!((0..64).contains(&sq1) && (0..64).contains(&sq2));
-    // SAFETY: sq1 and sq2 are valid squares (0-63), so index is always < 4096
-    unsafe {
-        *tables()
-            .metric
-            .get_unchecked((sq1 as usize) * 64 + sq2 as usize)
-    }
+    tables().metric[(sq1 as usize) * 64 + sq2 as usize]
 }

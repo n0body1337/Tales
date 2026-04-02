@@ -20,8 +20,6 @@
 // SearchRoot (root node) + Search (interior nodes).
 // Features: NMP, LMR, futility, razoring, singular extension, LMP, PVS, Sherwin flag.
 
-use std::mem::MaybeUninit;
-
 use crate::board::bitboard::{Bitboard, RANK_2_BB, RANK_7_BB};
 use crate::board::moves::*;
 use crate::board::position::{Position, Undo};
@@ -29,7 +27,8 @@ use crate::board::types::*;
 use crate::eval;
 use crate::search::ordering::*;
 use crate::search::quiesce;
-use crate::tt::{self, TransTable};
+use crate::search::uci_info;
+use crate::tt;
 
 // ============================================================================
 // LMR reduction table — initialized at startup
@@ -43,28 +42,33 @@ pub struct LmrTable {
     pub table: [[[i32; LMR_MAX_MOVES]; MAX_PLY]; 2],
 }
 
-#[allow(clippy::needless_range_loop)] // dp/mv used as both indices and math values
-pub fn lmr_table() -> LmrTable {
-    let mut t = [[[0i32; LMR_MAX_MOVES]; MAX_PLY]; 2];
-    for dp in 0..MAX_PLY {
-        for mv in 0..LMR_MAX_MOVES {
-            let mut r = 0i32;
-            if dp != 0 && mv != 0 {
-                r = ((dp as f64).ln() * (mv as f64).ln() / 2.0) as i32;
-            }
-            t[0][dp][mv] = r; // zero-window node
-            t[1][dp][mv] = (r - 1).max(0); // PV node (never negative)
+/// Get a reference to the global LMR table (computed once, reused forever).
+pub fn lmr_table() -> &'static LmrTable {
+    use std::sync::OnceLock;
+    static LMR: OnceLock<Box<LmrTable>> = OnceLock::new();
+    LMR.get_or_init(|| {
+        let mut t = [[[0i32; LMR_MAX_MOVES]; MAX_PLY]; 2];
+        #[allow(clippy::needless_range_loop)] // dp/mv used as both indices and math values
+        for dp in 0..MAX_PLY {
+            for mv in 0..LMR_MAX_MOVES {
+                let mut r = 0i32;
+                if dp != 0 && mv != 0 {
+                    r = ((dp as f64).ln() * (mv as f64).ln() / 2.0) as i32;
+                }
+                t[0][dp][mv] = r; // zero-window node
+                t[1][dp][mv] = (r - 1).max(0); // PV node (never negative)
 
-            // reduction cannot exceed actual depth
-            if t[0][dp][mv] > (dp as i32 - 1) {
-                t[0][dp][mv] = dp as i32 - 1;
-            }
-            if t[1][dp][mv] > (dp as i32 - 1) {
-                t[1][dp][mv] = dp as i32 - 1;
+                // reduction cannot exceed actual depth
+                if t[0][dp][mv] > (dp as i32 - 1) {
+                    t[0][dp][mv] = dp as i32 - 1;
+                }
+                if t[1][dp][mv] > (dp as i32 - 1) {
+                    t[1][dp][mv] = dp as i32 - 1;
+                }
             }
         }
-    }
-    LmrTable { table: t }
+        Box::new(LmrTable { table: t })
+    })
 }
 
 // ============================================================================
@@ -79,20 +83,26 @@ const SELECTIVE_DEPTH: i32 = 6; // Max(SNP_DEPTH, RAZOR_DEPTH, FUT_DEPTH)
 const RAZOR_MARGIN: [i32; 5] = [0, 300, 360, 420, 480];
 const FUTILITY_MARGIN: [i32; 7] = [0, 100, 160, 220, 280, 340, 400];
 
+/// Per-recursion state for interior-node search — arguments that change at each call.
+pub struct SearchFrame {
+    /// Whether the previous move was a null move.
+    pub was_null: bool,
+    /// The last move played (for refutation / countermove heuristics).
+    pub last_move: Move,
+    /// Square of the last capture (for recapture extensions).
+    pub last_capt_sq: i32,
+}
+
 // ============================================================================
 // SearchRoot — root-level search
 // NO pruning at root (no SNP, NMP, razoring, futility).
 // Has: TT probe, singular ext, IID, LMR, PVS, currmove.
 // ============================================================================
 
+/// Root-level search — iterates over legal moves with full-window alpha/beta at depth > 0.
 pub fn search_root(
+    ctx: &mut SearchCtx,
     pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    lmr: &LmrTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
     ply: usize,
     mut alpha: i32,
     beta: i32,
@@ -102,10 +112,9 @@ pub fn search_root(
     let mut new_pv: [Move; MAX_PLY] = [Move::NONE; MAX_PLY];
     let mut best = -INF;
     let mut mv_tried = 0usize;
-    // SAFETY: mv_played is a write-then-read buffer; we only read slots [0..mv_tried]
-    // which are always written before any read. No zeroing needed.
-    let mut mv_played: [MaybeUninit<Move>; MAX_MOVES] =
-        unsafe { MaybeUninit::uninit().assume_init() };
+    // Quiet moves tried so far — used for history penalty on cutoff.
+    let mut mv_quiet = [Move::NONE; MAX_MOVES];
+    let mut quiet_tried = 0usize;
 
     let is_pv = alpha != beta - 1;
 
@@ -115,105 +124,88 @@ pub fn search_root(
     let mut can_sing = false;
 
     // EARLY EXIT
-    tt.prefetch(pos.hash_key);
-    searcher.nodes += 1;
-    searcher.check_timeout();
-    if searcher.abort_search && searcher.root_depth > 1 {
+    ctx.tt.prefetch(pos.hash_key);
+    ctx.searcher.nodes += 1;
+    ctx.searcher.check_timeout();
+    if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
         return 0;
     }
     if ply > 0 {
         pv[0] = Move::NONE;
     }
     if pos.is_draw() && ply > 0 {
-        return pos.draw_score(par.draw_score, par.prog_side);
+        return pos.draw_score(ctx.par.draw_score, ctx.par.prog_side);
     }
 
     // TT PROBE
     let mut tt_move = Move::NONE;
-    let mut tt_score = 0i32;
-    let mut tt_flag = 0u8;
-    if tt.retrieve(
-        pos.hash_key,
-        &mut tt_move,
-        &mut tt_score,
-        &mut tt_flag,
-        alpha,
-        beta,
-        depth,
-        ply as i32,
-    ) {
-        if tt_score >= beta {
-            searcher.update_history(pos, Move::NONE, tt_move, depth, ply);
-        }
-        if !is_pv {
-            return tt_score;
+    if let Some(hit) = ctx
+        .tt
+        .retrieve(pos.hash_key, alpha, beta, depth, ply as i32)
+    {
+        tt_move = hit.best_move;
+        if hit.cutoff {
+            if hit.score >= beta {
+                ctx.searcher
+                    .update_history(pos, Move::NONE, tt_move, depth, ply);
+            }
+            if !is_pv {
+                return hit.score;
+            }
         }
     }
 
     // PREPARE FOR SINGULAR EXTENSION, SENPAI-STYLE
-    if is_pv && depth > 5 {
-        let mut s_mv = Move::NONE;
-        let mut s_sc = 0i32;
-        let mut s_fl = 0u8;
-        if tt.retrieve(
-            pos.hash_key,
-            &mut s_mv,
-            &mut s_sc,
-            &mut s_fl,
-            alpha,
-            beta,
-            depth - 4,
-            ply as i32,
-        ) && s_fl & tt::LOWER != 0
-        {
-            sing_move = s_mv;
-            sing_score = s_sc;
-            can_sing = true;
-        }
+    if is_pv
+        && depth > 5
+        && let Some(hit) = ctx
+            .tt
+            .retrieve(pos.hash_key, alpha, beta, depth - 4, ply as i32)
+        && hit.cutoff
+        && hit.flag & tt::LOWER != 0
+    {
+        sing_move = hit.best_move;
+        sing_score = hit.score;
+        can_sing = true;
     }
 
     // MAX PLY GUARD
     if ply >= MAX_PLY - 1 {
-        return eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key);
+        return eval::evaluate(
+            pos,
+            ctx.par,
+            ctx.eval_hash,
+            ctx.pawn_tt,
+            ctx.searcher.game_key,
+        );
     }
 
-    let fl_check = pos.in_check();
+    let in_check = pos.in_check();
 
     // INTERNAL ITERATIVE DEEPENING
-    if is_pv && !fl_check && tt_move.is_none() && depth > 6 {
-        search(
-            pos,
-            searcher,
-            tt,
-            lmr,
-            par,
-            eval_hash,
-            pawn_tt,
-            ply,
-            alpha,
-            beta,
-            depth - 2,
-            false,
-            Move::NONE,
-            -1,
-            &mut new_pv,
-        );
-        tt_move = tt.retrieve_move(pos.hash_key);
+    if is_pv && !in_check && tt_move.is_none() && depth > 6 {
+        let frame = SearchFrame {
+            was_null: false,
+            last_move: Move::NONE,
+            last_capt_sq: -1,
+        };
+        search(ctx, pos, ply, alpha, beta, depth - 2, &frame, &mut new_pv);
+        tt_move = ctx.tt.retrieve_move(pos.hash_key);
     }
 
     // PREPARE MOVE LOOP
-    let ref_move = searcher.get_refutation(tt_move);
+    let ref_move = ctx.searcher.get_refutation(tt_move);
     let mut picker = MovePicker::new(
         tt_move,
         ref_move,
         -1, // no ref_sq at root
-        searcher.killer[ply][0],
-        searcher.killer[ply][1],
+        ctx.searcher.killer[ply][0],
+        ctx.searcher.killer[ply][1],
     );
 
     // MAIN MOVE LOOP
     loop {
-        let (mv, mv_type) = picker.next_move(pos, &searcher.history);
+        let (mv, mv_type) = picker.next_move(pos, &ctx.searcher.history);
         if mv.is_none() {
             break;
         }
@@ -221,7 +213,7 @@ pub fn search_root(
         // MAKE MOVE
         let mv_hist_score = {
             let pc_idx = pos.pc[mv.from_sq() as usize].index();
-            searcher.history[pc_idx][mv.to_sq() as usize]
+            ctx.searcher.history[pc_idx][mv.to_sq() as usize]
         };
         let last_capt = if pos.pc[mv.to_sq() as usize] != NO_PC {
             mv.to_sq()
@@ -229,7 +221,7 @@ pub fn search_root(
             -1
         };
 
-        let mut u = Undo::uninit();
+        let mut u = Undo::new();
         pos.do_move(mv, &mut u);
         if pos.illegal() {
             pos.undo_move(mv, &u);
@@ -237,17 +229,16 @@ pub fn search_root(
         }
 
         // MultiPV: skip moves in avoid list
-        if searcher.is_avoid_move(mv) {
+        if ctx.searcher.is_avoid_move(mv) {
             pos.undo_move(mv, &u);
             continue;
         }
 
         // GATHER INFO
         let mut fl_extended = false;
-        mv_played[mv_tried] = MaybeUninit::new(mv);
         mv_tried += 1;
         if ply == 0 && mv_tried > 1 {
-            searcher.fl_root_choice = true;
+            ctx.searcher.has_root_choice = true;
         }
 
         // currmove output
@@ -289,21 +280,19 @@ pub fn search_root(
         if is_pv && depth > 5 && mv == sing_move && can_sing && !fl_extended {
             let new_alpha_s = -sing_score - 50;
             let mut mock_pv = [Move::NONE; 1];
+            let frame = SearchFrame {
+                was_null: false,
+                last_move: Move::NONE,
+                last_capt_sq: -1,
+            };
             let sc = search(
+                ctx,
                 pos,
-                searcher,
-                tt,
-                lmr,
-                par,
-                eval_hash,
-                pawn_tt,
-                ply,
-                new_alpha_s,
+                ply + 1,
                 new_alpha_s - 1,
+                new_alpha_s,
                 depth - 4,
-                false,
-                Move::NONE,
-                -1,
+                &frame,
                 &mut mock_pv,
             );
             if sc <= new_alpha_s {
@@ -311,20 +300,27 @@ pub fn search_root(
             }
         }
 
+        // Track quiet moves for history penalty
+        if mv_type == MoveKind::Normal || mv_type == MoveKind::Refutation {
+            mv_quiet[quiet_tried] = mv;
+            quiet_tried += 1;
+        }
+
         // LMR (NORMAL MOVES)
         let mut reduction = 0;
         if depth > 2
             && mv_tried > 3
-            && !fl_check
+            && !in_check
             && !child_in_check
-            && lmr.table[is_pv as usize][depth.min(63) as usize][mv_tried.min(LMR_MAX_MOVES - 1)]
+            && ctx.lmr.table[is_pv as usize][depth.min(63) as usize]
+                [mv_tried.min(LMR_MAX_MOVES - 1)]
                 > 0
-            && mv_type == MV_NORMAL
-            && mv_hist_score < par.hist_limit
+            && mv_type == MoveKind::Normal
+            && mv_hist_score < ctx.par.hist_limit
             && mv.move_type() != CASTLE
         {
-            reduction =
-                lmr.table[is_pv as usize][depth.min(63) as usize][mv_tried.min(LMR_MAX_MOVES - 1)];
+            reduction = ctx.lmr.table[is_pv as usize][depth.min(63) as usize]
+                [mv_tried.min(LMR_MAX_MOVES - 1)];
 
             // increase reduction on bad history score
             if mv_hist_score < 0 && new_depth - reduction >= 2 {
@@ -337,58 +333,42 @@ pub fn search_root(
         // PVS
         let mut score;
         loop {
+            let frame = SearchFrame {
+                was_null: false,
+                last_move: mv,
+                last_capt_sq: last_capt,
+            };
             if best == -INF {
                 score = -search(
+                    ctx,
                     pos,
-                    searcher,
-                    tt,
-                    lmr,
-                    par,
-                    eval_hash,
-                    pawn_tt,
                     ply + 1,
                     -beta,
                     -alpha,
                     new_depth,
-                    false,
-                    mv,
-                    last_capt,
+                    &frame,
                     &mut new_pv,
                 );
             } else {
                 score = -search(
+                    ctx,
                     pos,
-                    searcher,
-                    tt,
-                    lmr,
-                    par,
-                    eval_hash,
-                    pawn_tt,
                     ply + 1,
                     -alpha - 1,
                     -alpha,
                     new_depth,
-                    false,
-                    mv,
-                    last_capt,
+                    &frame,
                     &mut new_pv,
                 );
-                if !searcher.abort_search && score > alpha && score < beta {
+                if !ctx.searcher.abort_search && score > alpha && score < beta {
                     score = -search(
+                        ctx,
                         pos,
-                        searcher,
-                        tt,
-                        lmr,
-                        par,
-                        eval_hash,
-                        pawn_tt,
                         ply + 1,
                         -beta,
                         -alpha,
                         new_depth,
-                        false,
-                        mv,
-                        last_capt,
+                        &frame,
                         &mut new_pv,
                     );
                 }
@@ -405,26 +385,26 @@ pub fn search_root(
 
         // UNDO MOVE
         pos.undo_move(mv, &u);
-        if searcher.abort_search && searcher.root_depth > 1 {
+        if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
             return 0;
         }
 
         // BETA CUTOFF
         if score >= beta {
-            if !fl_check {
-                searcher.update_history(pos, Move::NONE, mv, depth, ply);
-                for mv_u in &mv_played[..mv_tried] {
-                    // SAFETY: slots [0..mv_tried] are initialized above
-                    let mv_p = unsafe { mv_u.assume_init() };
-                    searcher.decrease_history(pos, mv_p, depth);
+            if !in_check {
+                ctx.searcher.update_history(pos, Move::NONE, mv, depth, ply);
+                // Penalize all quiet moves tried before the cutoff move.
+                for &mv_p in &mv_quiet[..quiet_tried.saturating_sub(1)] {
+                    ctx.searcher.decrease_history(pos, mv_p, depth);
                 }
             }
-            tt.store(pos.hash_key, mv, score, tt::LOWER, depth, ply as i32);
+            ctx.tt
+                .store(pos.hash_key, mv, score, tt::LOWER, depth, ply as i32);
 
             // At root, build and display PV
             if ply == 0 {
                 quiesce::build_pv(pv, &new_pv, mv);
-                display_pv(searcher, tt, depth, score, pv);
+                display_pv(ctx, depth, score, pv);
             }
 
             return score;
@@ -438,7 +418,7 @@ pub fn search_root(
 
                 quiesce::build_pv(pv, &new_pv, mv);
                 if ply == 0 {
-                    display_pv(searcher, tt, depth, score, pv);
+                    display_pv(ctx, depth, score, pv);
                 }
             }
         }
@@ -446,24 +426,29 @@ pub fn search_root(
 
     // CHECKMATE / STALEMATE
     if best == -INF {
-        if fl_check {
+        if in_check {
             return -MATE + ply as i32;
         }
-        return pos.draw_score(par.draw_score, par.prog_side);
+        return pos.draw_score(ctx.par.draw_score, ctx.par.prog_side);
     }
 
     // STORE TO TT
     if pv[0] != Move::NONE {
-        if !fl_check {
-            searcher.update_history(pos, Move::NONE, pv[0], depth, ply);
-            for mv_u in &mv_played[..mv_tried] {
-                let mv_p = unsafe { mv_u.assume_init() };
-                searcher.decrease_history(pos, mv_p, depth);
+        if !in_check {
+            ctx.searcher
+                .update_history(pos, Move::NONE, pv[0], depth, ply);
+            // Penalize all quiet moves tried except the best move.
+            for &mv_p in &mv_quiet[..quiet_tried] {
+                if mv_p != pv[0] {
+                    ctx.searcher.decrease_history(pos, mv_p, depth);
+                }
             }
         }
-        tt.store(pos.hash_key, pv[0], best, tt::EXACT, depth, ply as i32);
+        ctx.tt
+            .store(pos.hash_key, pv[0], best, tt::EXACT, depth, ply as i32);
     } else {
-        tt.store(pos.hash_key, Move::NONE, best, tt::UPPER, depth, ply as i32);
+        ctx.tt
+            .store(pos.hash_key, Move::NONE, best, tt::UPPER, depth, ply as i32);
     }
 
     best
@@ -473,29 +458,30 @@ pub fn search_root(
 // Search — main interior-node search (alpha-beta with pruning and extensions)
 // ============================================================================
 
+/// Recursive alpha-beta search with null-move, LMR, futility, and check extensions.
+///
+/// The 8 parameters are the irreducible set for recursive alpha-beta: context,
+/// position, ply, alpha, beta, depth, per-call frame, and PV output buffer.
+/// `SearchCtx` already bundles all shared mutable state; `SearchFrame` bundles
+/// per-call parent info.
+#[allow(clippy::too_many_arguments)]
 pub fn search(
+    ctx: &mut SearchCtx,
     pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    lmr: &LmrTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
     ply: usize,
     mut alpha: i32,
     mut beta: i32,
     depth: i32,
-    was_null: bool,
-    last_move: Move,
-    last_capt_sq: i32,
+    frame: &SearchFrame,
     pv: &mut [Move],
 ) -> i32 {
+    let was_null = frame.was_null;
+    let last_move = frame.last_move;
+    let last_capt_sq = frame.last_capt_sq;
     let mut new_pv: [Move; MAX_PLY] = [Move::NONE; MAX_PLY];
     let mut mv_tried = 0usize;
-    // SAFETY: mv_played is a write-then-read buffer; we only read slots [0..mv_tried]
-    // which are always written before any read. No zeroing needed.
-    let mut mv_played: [MaybeUninit<Move>; MAX_MOVES] =
-        unsafe { MaybeUninit::uninit().assume_init() };
+    // Quiet moves tried so far — used for history penalty on cutoff.
+    let mut mv_quiet = [Move::NONE; MAX_MOVES];
     let mut quiet_tried = 0usize;
     let mut ref_sq: i32 = -1;
 
@@ -509,116 +495,103 @@ pub fn search(
 
     // QUIESCENCE SEARCH ENTRY POINT
     if depth <= 0 {
-        return quiesce::quiesce_checks(
-            pos,
-            searcher,
-            tt,
-            par,
-            eval_hash,
-            pawn_tt,
-            ply,
-            alpha,
-            beta,
-            &mut new_pv,
-        );
+        return quiesce::quiesce_checks(ctx, pos, ply, alpha, beta, &mut new_pv);
     }
 
     // EARLY EXIT
-    tt.prefetch(pos.hash_key);
-    searcher.nodes += 1;
-    if ply > searcher.seldepth {
-        searcher.seldepth = ply;
+    ctx.tt.prefetch(pos.hash_key);
+    ctx.searcher.nodes += 1;
+    if ply > ctx.searcher.seldepth {
+        ctx.searcher.seldepth = ply;
     }
-    searcher.check_timeout();
-    if searcher.abort_search && searcher.root_depth > 1 {
+    ctx.searcher.check_timeout();
+    if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
         return 0;
     }
     pv[0] = Move::NONE;
     if pos.is_draw() {
-        return pos.draw_score(par.draw_score, par.prog_side);
+        return pos.draw_score(ctx.par.draw_score, ctx.par.prog_side);
     }
 
     // MATE DISTANCE PRUNING
-    {
-        let checkmating_score = MATE - ply as i32;
-        if checkmating_score < beta {
-            beta = checkmating_score;
-            if alpha >= checkmating_score {
-                return alpha;
-            }
+    let checkmating_score = MATE - ply as i32;
+    if checkmating_score < beta {
+        beta = checkmating_score;
+        if alpha >= checkmating_score {
+            return alpha;
         }
-        let checkmated_score = -MATE + ply as i32;
-        if checkmated_score > alpha {
-            alpha = checkmated_score;
-            if beta <= checkmated_score {
-                return beta;
-            }
+    }
+    let checkmated_score = -MATE + ply as i32;
+    if checkmated_score > alpha {
+        alpha = checkmated_score;
+        if beta <= checkmated_score {
+            return beta;
         }
     }
 
     // TT PROBE
     let mut tt_move = Move::NONE;
-    let mut tt_score = 0i32;
-    let mut tt_flag = 0u8;
-    if tt.retrieve(
-        pos.hash_key,
-        &mut tt_move,
-        &mut tt_score,
-        &mut tt_flag,
-        alpha,
-        beta,
-        depth,
-        ply as i32,
-    ) {
-        if tt_score >= beta {
-            searcher.update_history(pos, last_move, tt_move, depth, ply);
-        }
-        if !is_pv {
-            return tt_score;
+    if let Some(hit) = ctx
+        .tt
+        .retrieve(pos.hash_key, alpha, beta, depth, ply as i32)
+    {
+        tt_move = hit.best_move;
+        if hit.cutoff {
+            if hit.score >= beta {
+                ctx.searcher
+                    .update_history(pos, last_move, tt_move, depth, ply);
+            }
+            if !is_pv {
+                return hit.score;
+            }
         }
     }
 
     // PREPARE FOR SINGULAR EXTENSION, SENPAI-STYLE
-    if is_pv && depth > 5 {
-        let mut s_mv = Move::NONE;
-        let mut s_sc = 0i32;
-        let mut s_fl = 0u8;
-        if tt.retrieve(
-            pos.hash_key,
-            &mut s_mv,
-            &mut s_sc,
-            &mut s_fl,
-            alpha,
-            beta,
-            depth - 4,
-            ply as i32,
-        ) && s_fl & tt::LOWER != 0
-        {
-            sing_move = s_mv;
-            sing_score = s_sc;
-            can_sing = true;
-        }
+    if is_pv
+        && depth > 5
+        && let Some(hit) = ctx
+            .tt
+            .retrieve(pos.hash_key, alpha, beta, depth - 4, ply as i32)
+        && hit.cutoff
+        && hit.flag & tt::LOWER != 0
+    {
+        sing_move = hit.best_move;
+        sing_score = hit.score;
+        can_sing = true;
     }
 
     // MAX PLY GUARD
     if ply >= MAX_PLY - 1 {
-        return eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key);
+        return eval::evaluate(
+            pos,
+            ctx.par,
+            ctx.eval_hash,
+            ctx.pawn_tt,
+            ctx.searcher.game_key,
+        );
     }
 
-    let fl_check = pos.in_check();
+    let in_check = pos.in_check();
 
-    // CAN WE PRUNE THIS NODE?
-    let fl_prunable = !fl_check && !is_pv && alpha > -MAX_EVAL && beta < MAX_EVAL;
+    // Can we apply forward-pruning heuristics at this node?
+    let can_prune = !in_check && !is_pv && alpha > -MAX_EVAL && beta < MAX_EVAL;
 
     // GET EVAL FOR PRUNING
-    let eval_score = if fl_prunable && (!was_null || depth <= SELECTIVE_DEPTH) {
-        eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key)
+    let eval_score = if can_prune && (!was_null || depth <= SELECTIVE_DEPTH) {
+        eval::evaluate(
+            pos,
+            ctx.par,
+            ctx.eval_hash,
+            ctx.pawn_tt,
+            ctx.searcher.game_key,
+        )
     } else {
         0
     };
 
     // STATIC NULL MOVE PRUNING / BETA PRUNING
-    if fl_prunable && depth <= SNP_DEPTH && !was_null {
+    if can_prune && depth <= SNP_DEPTH && !was_null {
         let sc = eval_score - 120 * depth;
         if sc > beta {
             return sc;
@@ -626,7 +599,7 @@ pub fn search(
     }
 
     // NULL MOVE PRUNING
-    if depth > 1 && !was_null && fl_prunable && pos.may_null() && eval_score >= beta {
+    if depth > 1 && !was_null && can_prune && pos.may_null() && eval_score >= beta {
         did_null = true;
 
         // Null move depth reduction — modified Stockfish formula
@@ -634,84 +607,50 @@ pub fn search(
 
         // Omit null move search if normal search to the same depth wouldn't exceed beta
         // (sometimes free via hash table)
+        if let Some(hit) = ctx
+            .tt
+            .retrieve(pos.hash_key, alpha, beta, new_depth, ply as i32)
+            && hit.cutoff
+            && hit.score < beta
         {
-            let mut null_mv = Move::NONE;
-            let mut null_sc = 0i32;
-            let mut null_fl = 0u8;
-            if tt.retrieve(
-                pos.hash_key,
-                &mut null_mv,
-                &mut null_sc,
-                &mut null_fl,
-                alpha,
-                beta,
-                new_depth,
-                ply as i32,
-            ) && null_sc < beta
-            {
-                // skip null move — equivalent of goto avoid_null
-                did_null = false;
-            }
+            // skip null move — equivalent of goto avoid_null
+            did_null = false;
         }
 
         if did_null {
-            let mut u = Undo::uninit();
+            let mut u = Undo::new();
             pos.do_null(&mut u);
+            let frame = SearchFrame {
+                was_null: true,
+                last_move: Move::NONE,
+                last_capt_sq: -1,
+            };
             let score = if new_depth <= 0 {
-                -quiesce::quiesce_checks(
-                    pos,
-                    searcher,
-                    tt,
-                    par,
-                    eval_hash,
-                    pawn_tt,
-                    ply + 1,
-                    -beta,
-                    -beta + 1,
-                    &mut new_pv,
-                )
+                -quiesce::quiesce_checks(ctx, pos, ply + 1, -beta, -beta + 1, &mut new_pv)
             } else {
                 -search(
+                    ctx,
                     pos,
-                    searcher,
-                    tt,
-                    lmr,
-                    par,
-                    eval_hash,
-                    pawn_tt,
                     ply + 1,
                     -beta,
                     -beta + 1,
                     new_depth,
-                    true,
-                    Move::NONE,
-                    -1,
+                    &frame,
                     &mut new_pv,
                 )
             };
 
             // Get null-refutation square from TT
+            if let Some(hit) = ctx
+                .tt
+                .retrieve(pos.hash_key, alpha, beta, depth, ply as i32)
+                && hit.best_move.is_some()
             {
-                let mut null_ref = Move::NONE;
-                let mut null_sc2 = 0i32;
-                let mut null_fl2 = 0u8;
-                if tt.retrieve(
-                    pos.hash_key,
-                    &mut null_ref,
-                    &mut null_sc2,
-                    &mut null_fl2,
-                    alpha,
-                    beta,
-                    depth,
-                    ply as i32,
-                ) && !null_ref.is_none()
-                {
-                    ref_sq = null_ref.to_sq();
-                }
+                ref_sq = hit.best_move.to_sq();
             }
 
             pos.undo_null(&u);
-            if searcher.abort_search && searcher.root_depth > 1 {
+            if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
                 return 0;
             }
 
@@ -721,24 +660,13 @@ pub fn search(
             if score >= beta {
                 // Verification search
                 if new_depth > 6 {
-                    let v_score = search(
-                        pos,
-                        searcher,
-                        tt,
-                        lmr,
-                        par,
-                        eval_hash,
-                        pawn_tt,
-                        ply,
-                        alpha,
-                        beta,
-                        new_depth - 5,
-                        true,
+                    let frame = SearchFrame {
+                        was_null: true,
                         last_move,
                         last_capt_sq,
-                        pv,
-                    );
-                    if searcher.abort_search && searcher.root_depth > 1 {
+                    };
+                    let v_score = search(ctx, pos, ply, alpha, beta, new_depth - 5, &frame, pv);
+                    if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
                         return 0;
                     }
                     if v_score >= beta {
@@ -752,7 +680,7 @@ pub fn search(
     }
 
     // RAZORING (based on Toga II 3.0)
-    if fl_prunable
+    if can_prune
         && tt_move.is_none()
         && !was_null
         && (pos.pawns(pos.side) & if pos.side == WC { RANK_7_BB } else { RANK_2_BB }).is_empty()
@@ -760,18 +688,7 @@ pub fn search(
     {
         let threshold = beta - RAZOR_MARGIN[depth as usize];
         if eval_score < threshold {
-            let score = quiesce::quiesce_checks(
-                pos,
-                searcher,
-                tt,
-                par,
-                eval_hash,
-                pawn_tt,
-                ply,
-                alpha,
-                beta,
-                &mut new_pv,
-            );
+            let score = quiesce::quiesce_checks(ctx, pos, ply, alpha, beta, &mut new_pv);
             if score < threshold {
                 return score;
             }
@@ -779,64 +696,53 @@ pub fn search(
     }
 
     // INTERNAL ITERATIVE DEEPENING
-    if is_pv && !fl_check && tt_move.is_none() && depth > 6 {
-        search(
-            pos,
-            searcher,
-            tt,
-            lmr,
-            par,
-            eval_hash,
-            pawn_tt,
-            ply,
-            alpha,
-            beta,
-            depth - 2,
-            false,
-            Move::NONE,
+    if is_pv && !in_check && tt_move.is_none() && depth > 6 {
+        let frame = SearchFrame {
+            was_null: false,
+            last_move: Move::NONE,
             last_capt_sq,
-            &mut new_pv,
-        );
-        tt_move = tt.retrieve_move(pos.hash_key);
+        };
+        search(ctx, pos, ply, alpha, beta, depth - 2, &frame, &mut new_pv);
+        tt_move = ctx.tt.retrieve_move(pos.hash_key);
     }
 
     // PREPARE MOVE LOOP
     // Use Refutation(hash_move) — continuation heuristic for move ordering.
-    let ref_move = searcher.get_refutation(tt_move);
+    let ref_move = ctx.searcher.get_refutation(tt_move);
 
     let mut picker = MovePicker::new(
         tt_move,
         ref_move,
         ref_sq,
-        searcher.killer[ply][0],
-        searcher.killer[ply][1],
+        ctx.searcher.killer[ply][0],
+        ctx.searcher.killer[ply][1],
     );
 
     let mut best = -INF;
     let mut hash_flag = tt::UPPER;
-    let mut fl_futility = false;
+    let mut do_futility = false;
 
     // MAIN MOVE LOOP
     loop {
-        let (mv, mv_type) = picker.next_move(pos, &searcher.history);
+        let (mv, mv_type) = picker.next_move(pos, &ctx.searcher.history);
         if mv.is_none() {
             break;
         }
 
         // SET FUTILITY PRUNING FLAG (before first applicable quiet move)
-        if mv_type == MV_NORMAL
+        if mv_type == MoveKind::Normal
             && quiet_tried == 0
-            && fl_prunable
+            && can_prune
             && depth <= FUT_DEPTH
             && eval_score + FUTILITY_MARGIN[depth as usize] < beta
         {
-            fl_futility = true;
+            do_futility = true;
         }
 
         // MAKE MOVE
         let mv_hist_score = {
             let pc_idx = pos.pc[mv.from_sq() as usize].index();
-            searcher.history[pc_idx][mv.to_sq() as usize]
+            ctx.searcher.history[pc_idx][mv.to_sq() as usize]
         };
         let last_capt = if pos.pc[mv.to_sq() as usize] != NO_PC {
             mv.to_sq()
@@ -844,7 +750,7 @@ pub fn search(
             -1
         };
 
-        let mut u = Undo::uninit();
+        let mut u = Undo::new();
         pos.do_move(mv, &mut u);
         if pos.illegal() {
             pos.undo_move(mv, &u);
@@ -853,13 +759,9 @@ pub fn search(
 
         // GATHER INFO
         let mut fl_extended = false;
-        mv_played[mv_tried] = MaybeUninit::new(mv);
         mv_tried += 1;
         if ply == 0 && mv_tried > 1 {
-            searcher.fl_root_choice = true;
-        }
-        if mv_type == MV_NORMAL {
-            quiet_tried += 1;
+            ctx.searcher.has_root_choice = true;
         }
 
         // SET NEW DEPTH
@@ -898,21 +800,19 @@ pub fn search(
         if is_pv && depth > 5 && mv == sing_move && can_sing && !fl_extended {
             let new_alpha_s = -sing_score - 50;
             let mut mock_pv = [Move::NONE; 1];
+            let frame = SearchFrame {
+                was_null: false,
+                last_move: Move::NONE,
+                last_capt_sq: -1,
+            };
             let sc = search(
+                ctx,
                 pos,
-                searcher,
-                tt,
-                lmr,
-                par,
-                eval_hash,
-                pawn_tt,
-                ply,
-                new_alpha_s,
+                ply + 1,
                 new_alpha_s - 1,
+                new_alpha_s,
                 depth - 4,
-                false,
-                Move::NONE,
-                -1,
+                &frame,
                 &mut mock_pv,
             );
             if sc <= new_alpha_s {
@@ -921,10 +821,10 @@ pub fn search(
         }
 
         // FUTILITY PRUNING
-        if fl_futility
+        if do_futility
             && !child_in_check
-            && mv_hist_score < par.hist_limit
-            && mv_type == MV_NORMAL
+            && mv_hist_score < ctx.par.hist_limit
+            && mv_type == MoveKind::Normal
             && mv_tried > 1
         {
             pos.undo_move(mv, &u);
@@ -932,32 +832,27 @@ pub fn search(
         }
 
         // LATE MOVE PRUNING
-        if fl_prunable
+        if can_prune
             && depth <= 3
             && quiet_tried > (3 * depth) as usize
             && !child_in_check
-            && mv_hist_score < par.hist_limit
-            && mv_type == MV_NORMAL
+            && mv_hist_score < ctx.par.hist_limit
+            && mv_type == MoveKind::Normal
         {
             pos.undo_move(mv, &u);
             continue;
         }
 
+        // Track quiet moves for history penalty (AFTER pruning to avoid gaps)
+        if mv_type == MoveKind::Normal || mv_type == MoveKind::Refutation {
+            mv_quiet[quiet_tried] = mv;
+            quiet_tried += 1;
+        }
+
         // SHERWIN FLAG — set flag responsible for increasing reduction
         let mut sherwin_flag = false;
         if did_null && depth > 2 && !child_in_check {
-            let q_score = quiesce::quiesce_checks(
-                pos,
-                searcher,
-                tt,
-                par,
-                eval_hash,
-                pawn_tt,
-                ply,
-                -beta,
-                -beta + 1,
-                pv,
-            );
+            let q_score = quiesce::quiesce_checks(ctx, pos, ply, -beta, -beta + 1, pv);
             if q_score >= beta {
                 sherwin_flag = true;
             }
@@ -967,16 +862,17 @@ pub fn search(
         let mut reduction = 0;
         if depth > 2
             && mv_tried > 3
-            && !fl_check
+            && !in_check
             && !child_in_check
-            && lmr.table[is_pv as usize][depth.min(63) as usize][mv_tried.min(LMR_MAX_MOVES - 1)]
+            && ctx.lmr.table[is_pv as usize][depth.min(63) as usize]
+                [mv_tried.min(LMR_MAX_MOVES - 1)]
                 > 0
-            && mv_type == MV_NORMAL
-            && mv_hist_score < par.hist_limit
+            && mv_type == MoveKind::Normal
+            && mv_hist_score < ctx.par.hist_limit
             && mv.move_type() != CASTLE
         {
-            reduction =
-                lmr.table[is_pv as usize][depth.min(63) as usize][mv_tried.min(LMR_MAX_MOVES - 1)];
+            reduction = ctx.lmr.table[is_pv as usize][depth.min(63) as usize]
+                [mv_tried.min(LMR_MAX_MOVES - 1)];
 
             // increase reduction when Sherwin flag is set
             if sherwin_flag && new_depth - reduction >= 2 {
@@ -989,7 +885,7 @@ pub fn search(
             }
 
             // decrease reduction on good history score
-            if mv_hist_score > par.hist_limit && reduction > 0 {
+            if mv_hist_score > ctx.par.hist_limit && reduction > 0 {
                 reduction -= 1;
             }
 
@@ -1001,9 +897,9 @@ pub fn search(
             && mv_tried > 6
             && alpha > -MAX_EVAL
             && beta < MAX_EVAL
-            && !fl_check
+            && !in_check
             && !child_in_check
-            && mv_type == MV_BADCAPT
+            && mv_type == MoveKind::BadCapt
             && !is_pv
         {
             reduction = 1;
@@ -1013,58 +909,42 @@ pub fn search(
         // PVS
         let mut score;
         loop {
+            let frame = SearchFrame {
+                was_null: false,
+                last_move: mv,
+                last_capt_sq: last_capt,
+            };
             if best == -INF {
                 score = -search(
+                    ctx,
                     pos,
-                    searcher,
-                    tt,
-                    lmr,
-                    par,
-                    eval_hash,
-                    pawn_tt,
                     ply + 1,
                     -beta,
                     -alpha,
                     new_depth,
-                    false,
-                    mv,
-                    last_capt,
+                    &frame,
                     &mut new_pv,
                 );
             } else {
                 score = -search(
+                    ctx,
                     pos,
-                    searcher,
-                    tt,
-                    lmr,
-                    par,
-                    eval_hash,
-                    pawn_tt,
                     ply + 1,
                     -alpha - 1,
                     -alpha,
                     new_depth,
-                    false,
-                    mv,
-                    last_capt,
+                    &frame,
                     &mut new_pv,
                 );
-                if !searcher.abort_search && score > alpha && score < beta {
+                if !ctx.searcher.abort_search && score > alpha && score < beta {
                     score = -search(
+                        ctx,
                         pos,
-                        searcher,
-                        tt,
-                        lmr,
-                        par,
-                        eval_hash,
-                        pawn_tt,
                         ply + 1,
                         -beta,
                         -alpha,
                         new_depth,
-                        false,
-                        mv,
-                        last_capt,
+                        &frame,
                         &mut new_pv,
                     );
                 }
@@ -1081,20 +961,21 @@ pub fn search(
 
         // UNDO MOVE
         pos.undo_move(mv, &u);
-        if searcher.abort_search && searcher.root_depth > 1 {
+        if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
             return 0;
         }
 
         // BETA CUTOFF
         if score >= beta {
-            if !fl_check {
-                searcher.update_history(pos, last_move, mv, depth, ply);
-                for mv_u in &mv_played[..mv_tried] {
-                    let mv_p = unsafe { mv_u.assume_init() };
-                    searcher.decrease_history(pos, mv_p, depth);
+            if !in_check {
+                ctx.searcher.update_history(pos, last_move, mv, depth, ply);
+                // Penalize all quiet moves tried before the cutoff move.
+                for &mv_p in &mv_quiet[..quiet_tried.saturating_sub(1)] {
+                    ctx.searcher.decrease_history(pos, mv_p, depth);
                 }
             }
-            tt.store(pos.hash_key, mv, score, tt::LOWER, depth, ply as i32);
+            ctx.tt
+                .store(pos.hash_key, mv, score, tt::LOWER, depth, ply as i32);
             return score;
         }
 
@@ -1111,24 +992,29 @@ pub fn search(
 
     // CHECKMATE / STALEMATE
     if mv_tried == 0 {
-        if fl_check {
+        if in_check {
             return -MATE + ply as i32;
         }
-        return pos.draw_score(par.draw_score, par.prog_side);
+        return pos.draw_score(ctx.par.draw_score, ctx.par.prog_side);
     }
 
     // STORE TO TT
     if hash_flag == tt::EXACT {
-        if !fl_check {
-            searcher.update_history(pos, last_move, pv[0], depth, ply);
-            for mv_u in &mv_played[..mv_tried] {
-                let mv_p = unsafe { mv_u.assume_init() };
-                searcher.decrease_history(pos, mv_p, depth);
+        if !in_check {
+            ctx.searcher
+                .update_history(pos, last_move, pv[0], depth, ply);
+            // Penalize all quiet moves tried except the best move.
+            for &mv_p in &mv_quiet[..quiet_tried] {
+                if mv_p != pv[0] {
+                    ctx.searcher.decrease_history(pos, mv_p, depth);
+                }
             }
         }
-        tt.store(pos.hash_key, pv[0], best, tt::EXACT, depth, ply as i32);
+        ctx.tt
+            .store(pos.hash_key, pv[0], best, tt::EXACT, depth, ply as i32);
     } else {
-        tt.store(pos.hash_key, Move::NONE, best, tt::UPPER, depth, ply as i32);
+        ctx.tt
+            .store(pos.hash_key, Move::NONE, best, tt::UPPER, depth, ply as i32);
     }
 
     best
@@ -1139,52 +1025,42 @@ pub fn search(
 // Uses aspiration search at depth > 6 with margin 8.
 // ============================================================================
 
-pub fn iterate(
-    pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
-    max_depth: i32,
-) {
-    let lmr = lmr_table();
-    searcher.nodes = 0;
-    searcher.abort_search = false;
-    searcher.start_time = std::time::Instant::now();
-    searcher.fl_root_choice = false;
+/// Iterative deepening loop — drives depth progression with aspiration windows.
+pub fn iterate(ctx: &mut SearchCtx, pos: &mut Position, max_depth: i32) {
+    ctx.searcher.nodes = 0;
+    ctx.searcher.abort_search = false;
+    ctx.searcher.start_time = std::time::Instant::now();
+    ctx.searcher.has_root_choice = false;
 
     let mut pv = [Move::NONE; MAX_PLY];
     let mut last_score = 0i32;
 
     // tt.new_search() is called by lazy_smp_search() before iterate(),
     // matching the approach where tt_date is incremented once in the go handler.
-    searcher.age_hist();
+    ctx.searcher.age_hist();
 
     for depth in 1..=max_depth {
-        searcher.root_depth = depth;
-        searcher.seldepth = 0;
+        ctx.searcher.root_depth = depth;
+        ctx.searcher.seldepth = 0;
 
         // Aspiration search
-        let cur_val = widen(
-            pos, searcher, tt, &lmr, par, eval_hash, pawn_tt, depth, &mut pv, last_score,
-        );
+        let cur_val = widen(ctx, pos, depth, &mut pv, last_score);
 
-        if searcher.abort_search {
+        if ctx.searcher.abort_search {
             break;
         }
 
         last_score = cur_val;
-        searcher.dp_completed = depth;
+        ctx.searcher.dp_completed = depth;
 
         // Save engine's best/ponder moves
-        searcher.pv_eng[0] = pv[0];
-        if !pv[1].is_none() {
-            searcher.pv_eng[1] = pv[1];
+        ctx.searcher.pv_eng[0] = pv[0];
+        if pv[1].is_some() {
+            ctx.searcher.pv_eng[1] = pv[1];
         }
 
         // Shorten search if there is only one root move available
-        if depth >= 8 && !searcher.fl_root_choice {
+        if depth >= 8 && !ctx.searcher.has_root_choice {
             break;
         }
 
@@ -1197,30 +1073,28 @@ pub fn iterate(
             }
         }
     }
+}
 
-    // Output best move
-    if searcher.pv_eng[0].is_none() {
+/// Print the UCI `bestmove` line from the engine's saved PV.
+/// Only includes `ponder <move>` when the Ponder UCI option is enabled.
+pub fn print_bestmove(ctx: &SearchCtx) {
+    if ctx.searcher.pv_eng[0].is_none() {
         println!("bestmove 0000");
-    } else if !searcher.pv_eng[1].is_none() {
+    } else if ctx.searcher.ponder_enabled && ctx.searcher.pv_eng[1].is_some() {
         println!(
             "bestmove {} ponder {}",
-            searcher.pv_eng[0].to_uci_string(),
-            searcher.pv_eng[1].to_uci_string()
+            ctx.searcher.pv_eng[0].to_uci_string(),
+            ctx.searcher.pv_eng[1].to_uci_string()
         );
     } else {
-        println!("bestmove {}", searcher.pv_eng[0].to_uci_string());
+        println!("bestmove {}", ctx.searcher.pv_eng[0].to_uci_string());
     }
 }
 
 /// Aspiration search — widens window on fail-high/fail-low
 fn widen(
+    ctx: &mut SearchCtx,
     pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    lmr: &LmrTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
     depth: i32,
     pv: &mut [Move],
     last_score: i32,
@@ -1230,16 +1104,14 @@ fn widen(
         while margin < 500 {
             let alpha = last_score - margin;
             let beta = last_score + margin;
-            let cur_val = search_root(
-                pos, searcher, tt, lmr, par, eval_hash, pawn_tt, 0, alpha, beta, depth, pv,
-            );
-            if searcher.abort_search {
+            let cur_val = search_root(ctx, pos, 0, alpha, beta, depth, pv);
+            if ctx.searcher.abort_search {
                 return cur_val;
             }
             if cur_val > alpha && cur_val < beta {
                 return cur_val;
             }
-            if cur_val > MAX_EVAL {
+            if !(-MAX_EVAL..=MAX_EVAL).contains(&cur_val) {
                 break;
             } // verify mate with infinite bounds
             margin *= 2;
@@ -1247,33 +1119,22 @@ fn widen(
     }
 
     // Full window search (fallback or depths <= 6)
-    search_root(
-        pos, searcher, tt, lmr, par, eval_hash, pawn_tt, 0, -INF, INF, depth, pv,
-    )
+    search_root(ctx, pos, 0, -INF, INF, depth, pv)
 }
 
 // ============================================================================
 // MultiPV — multi-principal-variation search
 // ============================================================================
 
-pub fn multi_pv(
-    pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
-    max_depth: i32,
-    num_pvs: usize,
-) {
-    let lmr = lmr_table();
-    searcher.nodes = 0;
-    searcher.abort_search = false;
-    searcher.start_time = std::time::Instant::now();
-    searcher.fl_root_choice = false;
+/// Multi-PV driver — runs `search_root` once per PV line with excluded-move masking.
+pub fn multi_pv(ctx: &mut SearchCtx, pos: &mut Position, max_depth: i32, num_pvs: usize) {
+    ctx.searcher.nodes = 0;
+    ctx.searcher.abort_search = false;
+    ctx.searcher.start_time = std::time::Instant::now();
+    ctx.searcher.has_root_choice = false;
     // tt.new_search() is called by lazy_smp_search() before multi_pv(),
     // matching the approach where tt_date is incremented once in the go handler.
-    searcher.age_hist();
+    ctx.searcher.age_hist();
 
     const MAX_MPV: usize = 64;
     let num_pvs = num_pvs.min(MAX_MPV);
@@ -1283,28 +1144,17 @@ pub fn multi_pv(
     let mut best_pv_idx = 0usize;
 
     for depth in 1..=max_depth {
-        searcher.clear_avoid_list();
+        ctx.searcher.clear_avoid_list();
         let mut best_score = -INF;
         best_pv_idx = 0;
 
         for pv_idx in 0..num_pvs {
-            searcher.root_depth = depth;
-            searcher.seldepth = 0;
+            ctx.searcher.root_depth = depth;
+            ctx.searcher.seldepth = 0;
 
-            let score = widen(
-                pos,
-                searcher,
-                tt,
-                &lmr,
-                par,
-                eval_hash,
-                pawn_tt,
-                depth,
-                &mut pv_lines[pv_idx],
-                pv_scores[pv_idx],
-            );
+            let score = widen(ctx, pos, depth, &mut pv_lines[pv_idx], pv_scores[pv_idx]);
 
-            if searcher.abort_search {
+            if ctx.searcher.abort_search {
                 break;
             }
 
@@ -1315,16 +1165,16 @@ pub fn multi_pv(
             }
 
             // Add this PV's best move to avoid list
-            if !pv_lines[pv_idx][0].is_none() {
-                searcher.set_avoid_move(pv_lines[pv_idx][0]);
+            if pv_lines[pv_idx][0].is_some() {
+                ctx.searcher.set_avoid_move(pv_lines[pv_idx][0]);
             }
         }
 
-        if searcher.abort_search {
+        if ctx.searcher.abort_search {
             break;
         }
 
-        searcher.dp_completed = depth;
+        ctx.searcher.dp_completed = depth;
 
         // Print all PV lines for this depth (reverse order for conventional display)
         for pv_idx in (0..num_pvs).rev() {
@@ -1332,33 +1182,27 @@ pub fn multi_pv(
                 continue;
             }
 
-            let elapsed_ms = searcher.start_time.elapsed().as_millis().max(1) as u64;
-            let nps = searcher.nodes * 1000 / elapsed_ms;
-            let hf = tt.hashfull();
+            let elapsed_ms = ctx.searcher.start_time.elapsed().as_millis().max(1) as u64;
+            let nps = ctx.searcher.nodes * 1000 / elapsed_ms;
+            let hf = ctx.tt.hashfull();
             let score = pv_scores[pv_idx];
 
-            let score_str = if score > MAX_EVAL {
-                format!("score mate {}", (MATE - score + 1) / 2)
-            } else if score < -MAX_EVAL {
-                format!("score mate -{}", (MATE + score + 1) / 2)
-            } else {
-                format!("score cp {score}")
-            };
+            let score_str = uci_info::format_score(score);
 
             print!(
                 "info depth {} seldepth {} multipv {} {} nodes {} nps {} hashfull {} time {} pv",
                 depth,
-                searcher.seldepth,
+                ctx.searcher.seldepth,
                 pv_idx + 1,
                 score_str,
-                searcher.nodes,
+                ctx.searcher.nodes,
                 nps,
                 hf,
                 elapsed_ms
             );
 
             let mut i = 0;
-            while i < MAX_PV && !pv_lines[pv_idx][i].is_none() {
+            while i < MAX_PV && pv_lines[pv_idx][i].is_some() {
                 print!(" {}", pv_lines[pv_idx][i].to_uci_string());
                 i += 1;
             }
@@ -1370,50 +1214,32 @@ pub fn multi_pv(
     let best_mv = pv_lines[best_pv_idx][0];
     let ponder_mv = pv_lines[best_pv_idx][1];
 
-    searcher.pv_eng[0] = best_mv;
-    searcher.pv_eng[1] = ponder_mv;
-
-    if best_mv.is_none() {
-        println!("bestmove 0000");
-    } else if !ponder_mv.is_none() {
-        println!(
-            "bestmove {} ponder {}",
-            best_mv.to_uci_string(),
-            ponder_mv.to_uci_string()
-        );
-    } else {
-        println!("bestmove {}", best_mv.to_uci_string());
-    }
+    ctx.searcher.pv_eng[0] = best_mv;
+    ctx.searcher.pv_eng[1] = ponder_mv;
 }
 
 // ============================================================================
 // Display helpers
 // ============================================================================
 
-fn display_pv(searcher: &Searcher, tt: &TransTable, depth: i32, score: i32, pv: &[Move]) {
-    if searcher.multi_pv > 1 {
+fn display_pv(ctx: &SearchCtx, depth: i32, score: i32, pv: &[Move]) {
+    if ctx.searcher.multi_pv > 1 {
         return;
     } // MultiPV prints its own info lines
 
-    let elapsed_ms = searcher.start_time.elapsed().as_millis().max(1) as u64;
-    let nps = searcher.nodes * 1000 / elapsed_ms;
-    let hf = tt.hashfull();
+    let elapsed_ms = ctx.searcher.start_time.elapsed().as_millis().max(1) as u64;
+    let nps = ctx.searcher.nodes * 1000 / elapsed_ms;
+    let hf = ctx.tt.hashfull();
 
-    let score_str = if score > MAX_EVAL {
-        format!("score mate {}", (MATE - score + 1) / 2)
-    } else if score < -MAX_EVAL {
-        format!("score mate -{}", (MATE + score + 1) / 2)
-    } else {
-        format!("score cp {score}")
-    };
+    let score_str = uci_info::format_score(score);
 
     print!(
         "info depth {} seldepth {} {} nodes {} nps {} hashfull {} time {} pv",
-        depth, searcher.seldepth, score_str, searcher.nodes, nps, hf, elapsed_ms
+        depth, ctx.searcher.seldepth, score_str, ctx.searcher.nodes, nps, hf, elapsed_ms
     );
 
     let mut i = 0;
-    while i < MAX_PV && !pv[i].is_none() {
+    while i < MAX_PV && pv[i].is_some() {
         print!(" {}", pv[i].to_uci_string());
         i += 1;
     }

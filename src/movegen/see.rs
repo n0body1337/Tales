@@ -16,16 +16,13 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Static Exchange Evaluation.cpp (POS::Swap).
-// Evaluates the material outcome of a capture sequence on a square.
+//! Static Exchange Evaluation (SEE) — determines the material outcome of a capture sequence.
 
 use crate::board::attacks;
 use crate::board::bitboard::Bitboard;
 use crate::board::position::Position;
 use crate::board::types::*;
 
-/// Static Exchange Evaluation for a move from `from` to `to`.
-/// Returns the material gain/loss assuming optimal recapture sequence.
 /// Static Exchange Evaluation (SEE) — determines if a capture sequence wins material.
 pub fn see(pos: &Position, from: i32, to: i32) -> i32 {
     let mut score = [0i32; 32];
@@ -70,7 +67,7 @@ pub fn see(pos: &Position, from: i32, to: i32) -> i32 {
             if type_bb.is_not_empty() {
                 piece_type = tp;
                 // Remove weakest attacker (LSB of type_bb)
-                occ ^= Bitboard(type_bb.0 & type_bb.0.wrapping_neg());
+                occ ^= type_bb.lsb_bb();
                 found = true;
                 break;
             }

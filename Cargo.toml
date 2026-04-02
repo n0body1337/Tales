@@ -9,8 +9,6 @@ description = "Tales — UCI chess engine written in Rust"
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
-[lints.clippy]
-too_many_arguments = "allow"
 
 [profile.release]
 opt-level = 3

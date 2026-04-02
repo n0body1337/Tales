@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Move generation.
-// Three generators: captures (+ promotions), quiet (+ castling), special (checking moves).
+//! Move generation — captures (+promotions), quiet moves (+castling), and checking moves.
 
 use crate::board::attacks;
 use crate::board::bitboard::*;
@@ -28,24 +27,10 @@ use crate::board::types::*;
 use super::movelist::MoveList;
 
 // ============================================================================
-// Helper: encode move inline
+// Captures — all captures + promotions (including non-capture promos)
 // ============================================================================
 
-#[inline(always)]
-fn encode(move_type: u16, to: i32, from: i32) -> Move {
-    Move::new(from, to, move_type)
-}
-
-#[inline(always)]
-fn encode_normal(to: i32, from: i32) -> Move {
-    Move::normal(from, to)
-}
-
-// ============================================================================
-// GenerateCaptures — all captures + promotions (including non-capture promos)
-// Generate all capture and promotion moves
-// ============================================================================
-
+/// Generate all legal capture and promotion moves for the current position.
 #[inline]
 pub fn generate_captures(pos: &Position, list: &mut MoveList) {
     let sd = pos.side;
@@ -58,52 +43,52 @@ pub fn generate_captures(pos: &Position, list: &mut MoveList) {
             Bitboard((pos.pawns(WC).0 & !FILE_A_BB.0 & RANK_7_BB.0) << 7) & pos.cl_bb[BC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(Q_PROM, to, to - 7));
-            list.push(encode(R_PROM, to, to - 7));
-            list.push(encode(B_PROM, to, to - 7));
-            list.push(encode(N_PROM, to, to - 7));
+            list.push(Move::new(to - 7, to, Q_PROM));
+            list.push(Move::new(to - 7, to, R_PROM));
+            list.push(Move::new(to - 7, to, B_PROM));
+            list.push(Move::new(to - 7, to, N_PROM));
         }
 
         bb = Bitboard((pos.pawns(WC).0 & !FILE_H_BB.0 & RANK_7_BB.0) << 9) & pos.cl_bb[BC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(Q_PROM, to, to - 9));
-            list.push(encode(R_PROM, to, to - 9));
-            list.push(encode(B_PROM, to, to - 9));
-            list.push(encode(N_PROM, to, to - 9));
+            list.push(Move::new(to - 9, to, Q_PROM));
+            list.push(Move::new(to - 9, to, R_PROM));
+            list.push(Move::new(to - 9, to, B_PROM));
+            list.push(Move::new(to - 9, to, N_PROM));
         }
 
         // Non-capture promotions (push to rank 8)
         bb = Bitboard((pos.pawns(WC).0 & RANK_7_BB.0) << 8) & pos.unocc_bb();
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(Q_PROM, to, to - 8));
-            list.push(encode(R_PROM, to, to - 8));
-            list.push(encode(B_PROM, to, to - 8));
-            list.push(encode(N_PROM, to, to - 8));
+            list.push(Move::new(to - 8, to, Q_PROM));
+            list.push(Move::new(to - 8, to, R_PROM));
+            list.push(Move::new(to - 8, to, B_PROM));
+            list.push(Move::new(to - 8, to, N_PROM));
         }
 
         // Normal pawn captures (non-rank-7)
         bb = Bitboard((pos.pawns(WC).0 & !FILE_A_BB.0 & !RANK_7_BB.0) << 7) & pos.cl_bb[BC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to - 7));
+            list.push(Move::normal(to - 7, to));
         }
 
         bb = Bitboard((pos.pawns(WC).0 & !FILE_H_BB.0 & !RANK_7_BB.0) << 9) & pos.cl_bb[BC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to - 9));
+            list.push(Move::normal(to - 9, to));
         }
 
         // En passant
         let ep = pos.ep_sq;
         if ep != NO_SQ {
             if Bitboard((pos.pawns(WC).0 & !FILE_A_BB.0) << 7).contains(ep) {
-                list.push(encode(EP_CAP, ep, ep - 7));
+                list.push(Move::new(ep - 7, ep, EP_CAP));
             }
             if Bitboard((pos.pawns(WC).0 & !FILE_H_BB.0) << 9).contains(ep) {
-                list.push(encode(EP_CAP, ep, ep - 9));
+                list.push(Move::new(ep - 9, ep, EP_CAP));
             }
         }
     } else {
@@ -112,52 +97,52 @@ pub fn generate_captures(pos: &Position, list: &mut MoveList) {
             Bitboard((pos.pawns(BC).0 & !FILE_A_BB.0 & RANK_2_BB.0) >> 9) & pos.cl_bb[WC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(Q_PROM, to, to + 9));
-            list.push(encode(R_PROM, to, to + 9));
-            list.push(encode(B_PROM, to, to + 9));
-            list.push(encode(N_PROM, to, to + 9));
+            list.push(Move::new(to + 9, to, Q_PROM));
+            list.push(Move::new(to + 9, to, R_PROM));
+            list.push(Move::new(to + 9, to, B_PROM));
+            list.push(Move::new(to + 9, to, N_PROM));
         }
 
         bb = Bitboard((pos.pawns(BC).0 & !FILE_H_BB.0 & RANK_2_BB.0) >> 7) & pos.cl_bb[WC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(Q_PROM, to, to + 7));
-            list.push(encode(R_PROM, to, to + 7));
-            list.push(encode(B_PROM, to, to + 7));
-            list.push(encode(N_PROM, to, to + 7));
+            list.push(Move::new(to + 7, to, Q_PROM));
+            list.push(Move::new(to + 7, to, R_PROM));
+            list.push(Move::new(to + 7, to, B_PROM));
+            list.push(Move::new(to + 7, to, N_PROM));
         }
 
         // Non-capture promotions
         bb = Bitboard((pos.pawns(BC).0 & RANK_2_BB.0) >> 8) & pos.unocc_bb();
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(Q_PROM, to, to + 8));
-            list.push(encode(R_PROM, to, to + 8));
-            list.push(encode(B_PROM, to, to + 8));
-            list.push(encode(N_PROM, to, to + 8));
+            list.push(Move::new(to + 8, to, Q_PROM));
+            list.push(Move::new(to + 8, to, R_PROM));
+            list.push(Move::new(to + 8, to, B_PROM));
+            list.push(Move::new(to + 8, to, N_PROM));
         }
 
         // Normal pawn captures (non-rank-2)
         bb = Bitboard((pos.pawns(BC).0 & !FILE_A_BB.0 & !RANK_2_BB.0) >> 9) & pos.cl_bb[WC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to + 9));
+            list.push(Move::normal(to + 9, to));
         }
 
         bb = Bitboard((pos.pawns(BC).0 & !FILE_H_BB.0 & !RANK_2_BB.0) >> 7) & pos.cl_bb[WC.index()];
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to + 7));
+            list.push(Move::normal(to + 7, to));
         }
 
         // En passant
         let ep = pos.ep_sq;
         if ep != NO_SQ {
             if Bitboard((pos.pawns(BC).0 & !FILE_A_BB.0) >> 9).contains(ep) {
-                list.push(encode(EP_CAP, ep, ep + 9));
+                list.push(Move::new(ep + 9, ep, EP_CAP));
             }
             if Bitboard((pos.pawns(BC).0 & !FILE_H_BB.0) >> 7).contains(ep) {
-                list.push(encode(EP_CAP, ep, ep + 7));
+                list.push(Move::new(ep + 7, ep, EP_CAP));
             }
         }
     }
@@ -170,7 +155,7 @@ pub fn generate_captures(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::knight_attacks(from) & them;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -179,7 +164,7 @@ pub fn generate_captures(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::bishop_attacks(occ, from) & them;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -188,7 +173,7 @@ pub fn generate_captures(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::rook_attacks(occ, from) & them;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -197,21 +182,21 @@ pub fn generate_captures(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::queen_attacks(occ, from) & them;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
     let mut moves = attacks::king_attacks(pos.king_sq(sd)) & them;
     while moves.is_not_empty() {
-        list.push(encode_normal(moves.pop_lsb(), pos.king_sq(sd)));
+        list.push(Move::normal(pos.king_sq(sd), moves.pop_lsb()));
     }
 }
 
 // ============================================================================
-// GenerateQuiet — non-captures: castling, double pawn push, single push, piece moves
-// Generate all non-capture, non-promotion moves
+// Quiet — non-captures: castling, pawn pushes, and piece moves
 // ============================================================================
 
+/// Generate all legal quiet (non-capture, non-promotion) moves.
 #[inline]
 pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
     let sd = pos.side;
@@ -225,14 +210,14 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
             && !attacks::is_attacked(E1, BC, occ, &pos.cl_bb, &pos.tp_bb)
             && !attacks::is_attacked(F1, BC, occ, &pos.cl_bb, &pos.tp_bb)
         {
-            list.push(encode(CASTLE, G1, E1));
+            list.push(Move::new(E1, G1, CASTLE));
         }
         if (pos.castling & W_QS) != 0
             && (occ.0 & 0x0000_0000_0000_000E) == 0
             && !attacks::is_attacked(E1, BC, occ, &pos.cl_bb, &pos.tp_bb)
             && !attacks::is_attacked(D1, BC, occ, &pos.cl_bb, &pos.tp_bb)
         {
-            list.push(encode(CASTLE, C1, E1));
+            list.push(Move::new(E1, C1, CASTLE));
         }
 
         // Double pawn push
@@ -240,14 +225,14 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
         bb = Bitboard((bb.0 << 8) & empty.0);
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(EP_SET, to, to - 16));
+            list.push(Move::new(to - 16, to, EP_SET));
         }
 
         // Single pawn push (non-rank-7, since rank-7 pushes are promotions in GenerateCaptures)
         bb = Bitboard((pos.pawns(WC).0 & !RANK_7_BB.0) << 8) & empty;
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to - 8));
+            list.push(Move::normal(to - 8, to));
         }
     } else {
         // Black castling
@@ -256,14 +241,14 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
             && !attacks::is_attacked(E8, WC, occ, &pos.cl_bb, &pos.tp_bb)
             && !attacks::is_attacked(F8, WC, occ, &pos.cl_bb, &pos.tp_bb)
         {
-            list.push(encode(CASTLE, G8, E8));
+            list.push(Move::new(E8, G8, CASTLE));
         }
         if (pos.castling & B_QS) != 0
             && (occ.0 & 0x0E00_0000_0000_0000) == 0
             && !attacks::is_attacked(E8, WC, occ, &pos.cl_bb, &pos.tp_bb)
             && !attacks::is_attacked(D8, WC, occ, &pos.cl_bb, &pos.tp_bb)
         {
-            list.push(encode(CASTLE, C8, E8));
+            list.push(Move::new(E8, C8, CASTLE));
         }
 
         // Double pawn push
@@ -271,14 +256,14 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
         bb = Bitboard((bb.0 >> 8) & empty.0);
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(EP_SET, to, to + 16));
+            list.push(Move::new(to + 16, to, EP_SET));
         }
 
         // Single pawn push (non-rank-2)
         bb = Bitboard((pos.pawns(BC).0 & !RANK_2_BB.0) >> 8) & empty;
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to + 8));
+            list.push(Move::normal(to + 8, to));
         }
     }
 
@@ -289,7 +274,7 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::knight_attacks(from) & empty;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -298,7 +283,7 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::bishop_attacks(occ, from) & empty;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -307,7 +292,7 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::rook_attacks(occ, from) & empty;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -316,21 +301,21 @@ pub fn generate_quiet(pos: &Position, list: &mut MoveList) {
         let from = pieces.pop_lsb();
         let mut moves = attacks::queen_attacks(occ, from) & empty;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
     let mut moves = attacks::king_attacks(pos.king_sq(sd)) & empty;
     while moves.is_not_empty() {
-        list.push(encode_normal(moves.pop_lsb(), pos.king_sq(sd)));
+        list.push(Move::normal(pos.king_sq(sd), moves.pop_lsb()));
     }
 }
 
 // ============================================================================
-// GenerateSpecial — quiet checking moves only (for quiescence search)
-// Generate special evasion and check moves (used in quiescence search)
+// Special — quiet checking moves only (for quiescence search)
 // ============================================================================
 
+/// Generate special moves — quiet checks and killer-move candidates.
 #[inline]
 pub fn generate_special(pos: &Position, list: &mut MoveList) {
     let sd = pos.side;
@@ -350,27 +335,27 @@ pub fn generate_special(pos: &Position, list: &mut MoveList) {
         bb = Bitboard((bb.0 << 8) & empty.0) & p_check;
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(EP_SET, to, to - 16));
+            list.push(Move::new(to - 16, to, EP_SET));
         }
 
         // Single push checking
         bb = Bitboard((pos.pawns(WC).0 & !RANK_7_BB.0) << 8) & empty & p_check;
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to - 8));
+            list.push(Move::normal(to - 8, to));
         }
     } else {
         let mut bb = Bitboard(((pos.pawns(BC).0 & RANK_7_BB.0) >> 8) & empty.0);
         bb = Bitboard((bb.0 >> 8) & empty.0) & p_check;
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode(EP_SET, to, to + 16));
+            list.push(Move::new(to + 16, to, EP_SET));
         }
 
         bb = Bitboard((pos.pawns(BC).0 & !RANK_2_BB.0) >> 8) & empty & p_check;
         while bb.is_not_empty() {
             let to = bb.pop_lsb();
-            list.push(encode_normal(to, to + 8));
+            list.push(Move::normal(to + 8, to));
         }
     }
 
@@ -384,7 +369,7 @@ pub fn generate_special(pos: &Position, list: &mut MoveList) {
             moves &= n_check;
         }
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -398,7 +383,7 @@ pub fn generate_special(pos: &Position, list: &mut MoveList) {
             moves &= b_check;
         }
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -412,7 +397,7 @@ pub fn generate_special(pos: &Position, list: &mut MoveList) {
             moves &= r_check;
         }
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 
@@ -423,7 +408,7 @@ pub fn generate_special(pos: &Position, list: &mut MoveList) {
         let mut moves = attacks::queen_attacks(occ, from) & empty;
         moves &= r_check | b_check;
         while moves.is_not_empty() {
-            list.push(encode_normal(moves.pop_lsb(), from));
+            list.push(Move::normal(from, moves.pop_lsb()));
         }
     }
 }
@@ -457,7 +442,7 @@ fn can_discover_check_by(pos: &Position, mut checkers: Bitboard, op: Color, from
 
 use crate::board::position::Undo;
 
-/// Perft function — count leaf nodes at depth `depth`.
+/// Perft — counts leaf nodes at a given depth for move generation validation.
 pub fn perft(pos: &mut Position, depth: i32) -> u64 {
     if depth == 0 {
         return 1;
@@ -470,7 +455,7 @@ pub fn perft(pos: &mut Position, depth: i32) -> u64 {
     let mut nodes: u64 = 0;
     for i in 0..list.count {
         let mv = list.get(i);
-        let mut u = Undo::uninit();
+        let mut u = Undo::new();
         pos.do_move(mv, &mut u);
         if !pos.illegal() {
             nodes += perft(pos, depth - 1);

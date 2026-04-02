@@ -16,11 +16,11 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Move encoding.
-//
-// Bits 0-5:   from square
-// Bits 6-11:  target square
-// Bits 12-15: move type
+//! Move encoding.
+//!
+//! - Bits 0–5: from square
+//! - Bits 6–11: target square
+//! - Bits 12–15: move type
 
 use super::types::*;
 use std::fmt;
@@ -47,6 +47,9 @@ pub struct Move(pub u16);
 
 impl Move {
     pub const NONE: Move = Move(0);
+    /// Sentinel value used where a valid `last_move` is unavailable (e.g., quiescence).
+    /// Distinct from `NONE` — signals "skip refutation update" rather than "no move".
+    pub const SENTINEL: Move = Move(u16::MAX);
 
     /// Construct a move from components
     #[inline(always)]
@@ -96,6 +99,12 @@ impl Move {
     #[inline(always)]
     pub fn is_none(self) -> bool {
         self.0 == 0
+    }
+
+    /// Is this a valid (non-null) move?
+    #[inline(always)]
+    pub fn is_some(self) -> bool {
+        self.0 != 0
     }
 
     /// Convert to UCI string (e.g., "e2e4", "e7e8q")

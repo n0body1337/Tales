@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Bitboard type — wraps u64 with chess-specific operations.
-// Bitboard operations and shift functions.
+//! Bitboard type — wraps `u64` with chess-specific operations and shift functions.
 
 use std::fmt;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
@@ -66,6 +65,13 @@ impl Bitboard {
     pub fn lsb(self) -> Square {
         debug_assert!(self.0 != 0);
         self.0.trailing_zeros() as Square
+    }
+
+    /// Least significant bit as a bitboard — isolates the lowest set bit.
+    #[inline(always)]
+    pub fn lsb_bb(self) -> Bitboard {
+        debug_assert!(self.0 != 0);
+        Bitboard(self.0 & self.0.wrapping_neg())
     }
 
     /// Pop (remove and return) the least significant bit
@@ -228,7 +234,7 @@ pub const CENTRAL_FILES: Bitboard = Bitboard(
     0x0404_0404_0404_0404 | 0x0808_0808_0808_0808 | 0x1010_1010_1010_1010 | 0x2020_2020_2020_2020,
 );
 
-/// Relative rank bitboards (indexed [color][rank])
+/// Relative rank bitboards (indexed \[color\]\[rank\])
 pub const REL_RANK_BB: [[Bitboard; 8]; 2] = [
     [
         RANK_1_BB, RANK_2_BB, RANK_3_BB, RANK_4_BB, RANK_5_BB, RANK_6_BB, RANK_7_BB, RANK_8_BB,

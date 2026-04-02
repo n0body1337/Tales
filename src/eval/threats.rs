@@ -16,15 +16,16 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Threat evaluation — evaluates threats from minor/major pieces.
+//! Threat evaluation — bonuses for attacks on hanging and underdefended pieces.
 
-use super::eval_data::{self, EvalData};
+use super::eval_data::EvalData;
 use super::params::EvalParams;
 use super::pst;
 
 use crate::board::position::Position;
 use crate::board::types::*;
 
+/// Evaluate threats — hanging pieces, pawn attacks on minor/major pieces.
 pub fn evaluate_threats(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
     let op = !sd;
     let si = sd.index();
@@ -73,10 +74,5 @@ pub fn evaluate_threats(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Co
         eg += pst::UNATT_UNDEF_EG[pc];
     }
 
-    eval_data::add(
-        e,
-        sd,
-        (par.w_threats * mg) / 100,
-        (par.w_threats * eg) / 100,
-    );
+    e.add(sd, (par.w_threats * mg) / 100, (par.w_threats * eg) / 100);
 }

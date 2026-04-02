@@ -16,7 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Evaluation module.
+//! Evaluation module — static position evaluation with incremental PST updates.
 
 pub mod endgame;
 pub mod eval_data;
@@ -37,8 +37,8 @@ use crate::board::types::*;
 use eval_data::EvalData;
 use params::EvalParams;
 
-pub const MAX_EVAL: i32 = 29999;
-pub const EVAL_HASH_SIZE: usize = 512 * 512 / 4; // 65536 entries
+// MAX_EVAL is imported from board::types via glob.
+pub const EVAL_HASH_SIZE: usize = 1 << 16; // 65536 entries
 const EVAL_HASH_MASK: usize = EVAL_HASH_SIZE - 1;
 
 #[derive(Clone)]
@@ -58,8 +58,7 @@ pub fn evaluate(
 ) -> i32 {
     // Try eval hash
     let addr = (p.hash_key as usize) & EVAL_HASH_MASK;
-    // SAFETY: addr is masked with EVAL_HASH_MASK which ensures addr < EVAL_HASH_SIZE
-    let entry = unsafe { eval_tt.get_unchecked(addr) };
+    let entry = &eval_tt[addr];
     if entry.key == p.hash_key {
         let sc = entry.score;
         return if p.side == WC { sc } else { -sc };
@@ -74,7 +73,7 @@ pub fn evaluate(
     e.eg[BC.index()] = p.eg_sc[BC.index()];
 
     // Init pawn helper bitboards
-    eval_data::init_pawn_data(p, &mut e);
+    e.init_pawn_data(p);
 
     // Run all evaluation subroutines
     material::evaluate_material(p, &mut e, par, WC);
@@ -89,7 +88,7 @@ pub fn evaluate(
     threats::evaluate_threats(p, &mut e, par, BC);
 
     // Tempo bonus
-    eval_data::add(&mut e, p.side, 14, 7);
+    e.add(p.side, par.tempo_mg, par.tempo_eg);
 
     // Patterns
     patterns::evaluate_knight_patterns(p, &mut e, par);
@@ -108,21 +107,20 @@ pub fn evaluate(
     e.eg[BC.index()] += e.eg_pawns[BC.index()];
 
     // Asymmetric piece-keeping bonus
-    let ps = par.prog_side.index();
-    e.mg[ps] += par.keep_pc[Q.index()] * p.cnt[ps][Q.index()];
-    e.mg[ps] += par.keep_pc[R.index()] * p.cnt[ps][R.index()];
-    e.mg[ps] += par.keep_pc[B.index()] * p.cnt[ps][B.index()];
-    e.mg[ps] += par.keep_pc[N.index()] * p.cnt[ps][N.index()];
-    e.mg[ps] += par.keep_pc[P.index()] * p.cnt[ps][P.index()];
+    let ps = par.prog_side;
+    let psi = ps.index();
+    e.mg[psi] += par.keep_pc[Q.index()] * p.count(ps, Q);
+    e.mg[psi] += par.keep_pc[R.index()] * p.count(ps, R);
+    e.mg[psi] += par.keep_pc[B.index()] * p.count(ps, B);
+    e.mg[psi] += par.keep_pc[N.index()] * p.count(ps, N);
+    e.mg[psi] += par.keep_pc[P.index()] * p.count(ps, P);
 
     // Interpolate
     let mut score = interpolate(p, &e);
 
     // Material imbalance (Crafty-based)
-    let minor_balance =
-        p.cnt[0][N.index()] - p.cnt[1][N.index()] + p.cnt[0][B.index()] - p.cnt[1][B.index()];
-    let major_balance = p.cnt[0][R.index()] - p.cnt[1][R.index()] + 2 * p.cnt[0][Q.index()]
-        - 2 * p.cnt[1][Q.index()];
+    let minor_balance = p.count(WC, N) - p.count(BC, N) + p.count(WC, B) - p.count(BC, B);
+    let major_balance = p.count(WC, R) - p.count(BC, R) + 2 * p.count(WC, Q) - 2 * p.count(BC, Q);
 
     let x = (major_balance + 4).clamp(0, 8) as usize;
     let y = (minor_balance + 4).clamp(0, 8) as usize;
@@ -138,22 +136,19 @@ pub fn evaluate(
     // KBN vs K helper
     score += endgame::checkmate_helper(p, par);
 
-    // Draw factor
-    let mut draw_factor = 64;
-    if score > 0 {
-        draw_factor = endgame::get_draw_factor(p, WC);
-    }
-    if score < 0 {
-        draw_factor = endgame::get_draw_factor(p, BC);
-    }
+    // Draw factor — scale score toward zero in drawish endgames
+    let draw_factor = match score.signum() {
+        1 => endgame::get_draw_factor(p, WC),
+        -1 => endgame::get_draw_factor(p, BC),
+        _ => 64,
+    };
     score = (score * draw_factor) / 64;
 
     // Clamp
     score = score.clamp(-MAX_EVAL, MAX_EVAL);
 
     // Save to eval hash
-    // SAFETY: addr is masked with EVAL_HASH_MASK, always in bounds
-    let entry = unsafe { eval_tt.get_unchecked_mut(addr) };
+    let entry = &mut eval_tt[addr];
     entry.key = p.hash_key;
     entry.score = score;
 

@@ -16,51 +16,50 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Quiescence search.
-// Three variants: Quiesce (captures), QuiesceChecks (+ checks), QuiesceFlee (evasion).
+//! Quiescence search — three layers: captures+checks, evasions, and pure captures.
 
 use crate::board::moves::*;
 use crate::board::position::{Position, Undo};
 use crate::board::types::*;
 use crate::eval;
 use crate::search::ordering::*;
-use crate::tt::{self, TransTable};
+use crate::tt;
 
-/// QuiesceChecks — considers captures + checks + killers (called from Search at depth=0)
+/// Quiescence layer 0 — resolves check evasions with captures, checks, and killers.
 pub fn quiesce_checks(
+    ctx: &mut SearchCtx,
     pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
     ply: usize,
     mut alpha: i32,
     beta: i32,
     pv: &mut [Move],
 ) -> i32 {
     if pos.in_check() {
-        return quiesce_flee(
-            pos, searcher, tt, par, eval_hash, pawn_tt, ply, alpha, beta, pv,
-        );
+        return quiesce_flee(ctx, pos, ply, alpha, beta, pv);
     }
 
     // EARLY EXIT
-    searcher.nodes += 1;
-    searcher.check_timeout();
-    if searcher.abort_search && searcher.root_depth > 1 {
+    ctx.searcher.nodes += 1;
+    ctx.searcher.check_timeout();
+    if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
         return 0;
     }
     pv[0] = Move::NONE;
     if pos.is_draw() && ply > 0 {
-        return pos.draw_score(par.draw_score, par.prog_side);
+        return pos.draw_score(ctx.par.draw_score, ctx.par.prog_side);
     }
 
     let mut mv = Move::NONE;
     let is_pv = alpha != beta - 1;
 
     // STAND PAT
-    let mut best = eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key);
+    let mut best = eval::evaluate(
+        pos,
+        ctx.par,
+        ctx.eval_hash,
+        ctx.pawn_tt,
+        ctx.searcher.game_key,
+    );
     if best >= beta {
         return best;
     }
@@ -69,68 +68,57 @@ pub fn quiesce_checks(
     }
 
     // TT PROBE
-    let mut tt_score = 0i32;
-    let mut tt_flag = 0u8;
-    if tt.retrieve(
-        pos.hash_key,
-        &mut mv,
-        &mut tt_score,
-        &mut tt_flag,
-        alpha,
-        beta,
-        0,
-        ply as i32,
-    ) {
-        if tt_score >= beta {
-            searcher.update_history(pos, Move(u16::MAX), mv, 1, ply); // -1 sentinel → use MAX
-        }
-        if !is_pv {
-            return tt_score;
+    if let Some(hit) = ctx.tt.retrieve(pos.hash_key, alpha, beta, 0, ply as i32) {
+        mv = hit.best_move;
+        if hit.cutoff {
+            if hit.score >= beta {
+                ctx.searcher.update_history(pos, Move::SENTINEL, mv, 1, ply);
+            }
+            if !is_pv {
+                return hit.score;
+            }
         }
     }
 
     // MAX PLY GUARD
     if ply >= MAX_PLY - 1 {
-        return eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key);
+        return eval::evaluate(
+            pos,
+            ctx.par,
+            ctx.eval_hash,
+            ctx.pawn_tt,
+            ctx.searcher.game_key,
+        );
     }
 
     // MAIN LOOP — special moves (captures, killers, checks)
     let mut new_pv = [Move::NONE; MAX_PLY];
-    let mut picker = SpecialPicker::new(mv, searcher.killer[ply][0], searcher.killer[ply][1]);
+    let mut picker =
+        SpecialPicker::new(mv, ctx.searcher.killer[ply][0], ctx.searcher.killer[ply][1]);
 
     loop {
-        let (mv, _flag) = picker.next_move(pos, &searcher.history);
+        let (mv, _flag) = picker.next_move(pos, &ctx.searcher.history);
         if mv.is_none() {
             break;
         }
 
-        let mut u = Undo::uninit();
+        let mut u = Undo::new();
         pos.do_move(mv, &mut u);
         if pos.illegal() {
             pos.undo_move(mv, &u);
             continue;
         }
 
-        let score = -quiesce(
-            pos,
-            searcher,
-            tt,
-            par,
-            eval_hash,
-            pawn_tt,
-            ply + 1,
-            -beta,
-            -alpha,
-            &mut new_pv,
-        );
+        let score = -quiesce(ctx, pos, ply + 1, -beta, -alpha, &mut new_pv);
 
         pos.undo_move(mv, &u);
-        if searcher.abort_search && searcher.root_depth > 1 {
+        if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
             return 0;
         }
 
         if score >= beta {
-            tt.store(pos.hash_key, mv, score, tt::LOWER, 0, ply as i32);
+            ctx.tt
+                .store(pos.hash_key, mv, score, tt::LOWER, 0, ply as i32);
             return score;
         }
 
@@ -143,72 +131,63 @@ pub fn quiesce_checks(
         }
     }
 
-    if best == -INF {
-        return if pos.in_check() {
-            -MATE + ply as i32
-        } else {
-            0
-        };
-    }
+    // If no special move improved the score, the stand-pat evaluation stands.
+    // (The in_check branch is unreachable here because we route to quiesce_flee at the top.)
 
-    if !pv[0].is_none() {
-        tt.store(pos.hash_key, pv[0], best, tt::EXACT, 0, ply as i32);
+    if pv[0].is_some() {
+        ctx.tt
+            .store(pos.hash_key, pv[0], best, tt::EXACT, 0, ply as i32);
     } else {
-        tt.store(pos.hash_key, Move::NONE, best, tt::UPPER, 0, ply as i32);
+        ctx.tt
+            .store(pos.hash_key, Move::NONE, best, tt::UPPER, 0, ply as i32);
     }
 
     best
 }
 
-/// QuiesceFlee — evasion search when in check (tries all moves)
+/// Quiescence layer 1 — evasion search when in check (tries all legal moves).
 pub fn quiesce_flee(
+    ctx: &mut SearchCtx,
     pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
     ply: usize,
     mut alpha: i32,
     beta: i32,
     pv: &mut [Move],
 ) -> i32 {
-    searcher.nodes += 1;
-    searcher.check_timeout();
-    if searcher.abort_search && searcher.root_depth > 1 {
+    ctx.searcher.nodes += 1;
+    ctx.searcher.check_timeout();
+    if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
         return 0;
     }
     pv[0] = Move::NONE;
     if pos.is_draw() && ply > 0 {
-        return pos.draw_score(par.draw_score, par.prog_side);
+        return pos.draw_score(ctx.par.draw_score, ctx.par.prog_side);
     }
 
     let mut mv = Move::NONE;
     let is_pv = alpha != beta - 1;
 
     // TT PROBE
-    let mut tt_score = 0i32;
-    let mut tt_flag = 0u8;
-    if tt.retrieve(
-        pos.hash_key,
-        &mut mv,
-        &mut tt_score,
-        &mut tt_flag,
-        alpha,
-        beta,
-        0,
-        ply as i32,
-    ) {
-        if tt_score >= beta {
-            searcher.update_history(pos, Move(u16::MAX), mv, 1, ply);
-        }
-        if !is_pv {
-            return tt_score;
+    if let Some(hit) = ctx.tt.retrieve(pos.hash_key, alpha, beta, 0, ply as i32) {
+        mv = hit.best_move;
+        if hit.cutoff {
+            if hit.score >= beta {
+                ctx.searcher.update_history(pos, Move::SENTINEL, mv, 1, ply);
+            }
+            if !is_pv {
+                return hit.score;
+            }
         }
     }
 
     if ply >= MAX_PLY - 1 {
-        return eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key);
+        return eval::evaluate(
+            pos,
+            ctx.par,
+            ctx.eval_hash,
+            ctx.pawn_tt,
+            ctx.searcher.game_key,
+        );
     }
 
     let mut best = -INF;
@@ -217,17 +196,17 @@ pub fn quiesce_flee(
         mv,
         Move::NONE,
         -1,
-        searcher.killer[ply][0],
-        searcher.killer[ply][1],
+        ctx.searcher.killer[ply][0],
+        ctx.searcher.killer[ply][1],
     );
 
     loop {
-        let (mv, _flag) = picker.next_move(pos, &searcher.history);
+        let (mv, _flag) = picker.next_move(pos, &ctx.searcher.history);
         if mv.is_none() {
             break;
         }
 
-        let mut u = Undo::uninit();
+        let mut u = Undo::new();
         pos.do_move(mv, &mut u);
         if pos.illegal() {
             pos.undo_move(mv, &u);
@@ -236,40 +215,19 @@ pub fn quiesce_flee(
 
         let in_check_after = pos.in_check();
         let score = if in_check_after {
-            -quiesce_flee(
-                pos,
-                searcher,
-                tt,
-                par,
-                eval_hash,
-                pawn_tt,
-                ply + 1,
-                -beta,
-                -alpha,
-                &mut new_pv,
-            )
+            -quiesce_flee(ctx, pos, ply + 1, -beta, -alpha, &mut new_pv)
         } else {
-            -quiesce(
-                pos,
-                searcher,
-                tt,
-                par,
-                eval_hash,
-                pawn_tt,
-                ply + 1,
-                -beta,
-                -alpha,
-                &mut new_pv,
-            )
+            -quiesce(ctx, pos, ply + 1, -beta, -alpha, &mut new_pv)
         };
 
         pos.undo_move(mv, &u);
-        if searcher.abort_search && searcher.root_depth > 1 {
+        if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
             return 0;
         }
 
         if score >= beta {
-            tt.store(pos.hash_key, mv, score, tt::LOWER, 0, ply as i32);
+            ctx.tt
+                .store(pos.hash_key, mv, score, tt::LOWER, 0, ply as i32);
             return score;
         }
 
@@ -286,23 +244,21 @@ pub fn quiesce_flee(
         return -MATE + ply as i32;
     }
 
-    if !pv[0].is_none() {
-        tt.store(pos.hash_key, pv[0], best, tt::EXACT, 0, ply as i32);
+    if pv[0].is_some() {
+        ctx.tt
+            .store(pos.hash_key, pv[0], best, tt::EXACT, 0, ply as i32);
     } else {
-        tt.store(pos.hash_key, Move::NONE, best, tt::UPPER, 0, ply as i32);
+        ctx.tt
+            .store(pos.hash_key, Move::NONE, best, tt::UPPER, 0, ply as i32);
     }
 
     best
 }
 
-/// Quiesce — standard quiescence (captures only, no checks)
+/// Quiescence layer 2 — standard capture-only resolution with delta pruning.
 pub fn quiesce(
+    ctx: &mut SearchCtx,
     pos: &mut Position,
-    searcher: &mut Searcher,
-    tt: &mut TransTable,
-    par: &eval::params::EvalParams,
-    eval_hash: &mut Vec<eval::EvalHashEntry>,
-    pawn_tt: &mut eval::pawn_hash::PawnHash,
     ply: usize,
     mut alpha: i32,
     beta: i32,
@@ -310,28 +266,38 @@ pub fn quiesce(
 ) -> i32 {
     // Evasion when in check
     if pos.in_check() {
-        return quiesce_flee(
-            pos, searcher, tt, par, eval_hash, pawn_tt, ply, alpha, beta, pv,
-        );
+        return quiesce_flee(ctx, pos, ply, alpha, beta, pv);
     }
 
-    searcher.nodes += 1;
-    searcher.check_timeout();
+    ctx.searcher.nodes += 1;
+    ctx.searcher.check_timeout();
 
-    if searcher.abort_search && searcher.root_depth > 1 {
+    if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
         return 0;
     }
     pv[0] = Move::NONE;
     if pos.is_draw() {
-        return pos.draw_score(par.draw_score, par.prog_side);
+        return pos.draw_score(ctx.par.draw_score, ctx.par.prog_side);
     }
 
     if ply >= MAX_PLY - 1 {
-        return eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key);
+        return eval::evaluate(
+            pos,
+            ctx.par,
+            ctx.eval_hash,
+            ctx.pawn_tt,
+            ctx.searcher.game_key,
+        );
     }
 
     // STAND PAT
-    let mut best = eval::evaluate(pos, par, eval_hash, pawn_tt, searcher.game_key);
+    let mut best = eval::evaluate(
+        pos,
+        ctx.par,
+        ctx.eval_hash,
+        ctx.pawn_tt,
+        ctx.searcher.game_key,
+    );
     let floor = best;
     let alpha_floor = alpha;
     if best >= beta {
@@ -353,10 +319,7 @@ pub fn quiesce(
         }
 
         // DELTA PRUNING
-        let op_pieces = pos.cnt[op.index()][N.index()]
-            + pos.cnt[op.index()][B.index()]
-            + pos.cnt[op.index()][R.index()]
-            + pos.cnt[op.index()][Q.index()];
+        let op_pieces = pos.count(op, N) + pos.count(op, B) + pos.count(op, R) + pos.count(op, Q);
 
         if op_pieces > 1 {
             // Prune if captured piece + margin < alpha
@@ -369,28 +332,17 @@ pub fn quiesce(
             }
         }
 
-        let mut u = Undo::uninit();
+        let mut u = Undo::new();
         pos.do_move(mv, &mut u);
         if pos.illegal() {
             pos.undo_move(mv, &u);
             continue;
         }
 
-        let score = -quiesce(
-            pos,
-            searcher,
-            tt,
-            par,
-            eval_hash,
-            pawn_tt,
-            ply + 1,
-            -beta,
-            -alpha,
-            &mut new_pv,
-        );
+        let score = -quiesce(ctx, pos, ply + 1, -beta, -alpha, &mut new_pv);
 
         pos.undo_move(mv, &u);
-        if searcher.abort_search && searcher.root_depth > 1 {
+        if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
             return 0;
         }
 
@@ -416,10 +368,10 @@ pub fn quiesce(
 
 pub fn build_pv(pv: &mut [Move], new_pv: &[Move], mv: Move) {
     pv[0] = mv;
-    // SAFETY: scanning for sentinel in bounded array; index always < MAX_PLY
+    let limit = new_pv.len().min(MAX_PLY - 1);
     let mut len = 0;
-    while len < MAX_PLY - 1 {
-        if unsafe { new_pv.get_unchecked(len) }.is_none() {
+    while len < limit {
+        if new_pv[len].is_none() {
             break;
         }
         len += 1;

@@ -16,9 +16,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Piece evaluation — evaluates piece placement, mobility, and outposts.
+//! Piece evaluation — placement, mobility, outposts, and king attack contribution.
 
-use super::eval_data::{self, EvalData};
+use super::eval_data::EvalData;
 use super::params::EvalParams;
 use super::pst;
 use crate::board::attacks;
@@ -72,6 +72,7 @@ fn evaluate_outpost(
     }
 }
 
+/// Evaluate piece placement, mobility, tropism, outposts, and line control for one side.
 pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
     let op = !sd;
     let si = sd.index();
@@ -118,7 +119,7 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
         let bb_control = attacks::knight_attacks(sq) & !p.cl_bb[si];
         center_control += (bb_control & masks::CENTER).popcount();
         if (bb_control & !e.p_takes[oi] & masks::AWAY[si]).is_empty() {
-            eval_data::add_both(e, sd, par.n_owh);
+            e.add_both(sd, par.n_owh);
         }
         e.all_att[si] |= attacks::knight_attacks(sq);
         e.ev_att[si] |= bb_control;
@@ -129,11 +130,10 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
         // Reachable outposts
         let bb_possible = bb_control & !e.p_takes[oi] & !e.p_can_take[oi] & OUTPOST_MAP[si];
         if bb_possible.is_not_empty() {
-            eval_data::add(e, sd, par.n_reach, 2);
+            e.add(sd, par.n_reach, 2);
         }
 
-        // King attack — uses actual knight square (fixed
-        // which passed `sd` (0 or 1) instead of the knight's real square).
+        // King attack contribution
         let bb_attack = attacks::knight_attacks(sq);
         if (bb_attack & bb_zone).is_not_empty() {
             e.wood[si] += 1;
@@ -166,7 +166,7 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
         e.all_att[si] |= bb_control;
         e.ev_att[si] |= bb_control;
         if (bb_control & masks::AWAY[si]).is_empty() {
-            eval_data::add_both(e, sd, par.b_owh);
+            e.add_both(sd, par.b_owh);
         }
         if (bb_control & b_checks).is_not_empty() {
             e.att[si] += par.b_chk;
@@ -186,17 +186,17 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
 
         let bb_possible = bb_control & !e.p_takes[oi] & !e.p_can_take[oi] & OUTPOST_MAP[si];
         if bb_possible.is_not_empty() {
-            eval_data::add(e, sd, par.b_reach, 2);
+            e.add(sd, par.b_reach, 2);
         }
 
         evaluate_outpost(p, e, par, sd, B, sq, &mut outpost);
 
         // Bishops side by side
         if (shift_north(Bitboard::from_sq(sq)) & p.bishops(sd)).is_not_empty() {
-            eval_data::add_both(e, sd, par.b_touch);
+            e.add_both(sd, par.b_touch);
         }
         if (shift_east(Bitboard::from_sq(sq)) & p.bishops(sd)).is_not_empty() {
-            eval_data::add_both(e, sd, par.b_touch);
+            e.add_both(sd, par.b_touch);
         }
 
         // Pawns on same color as bishop
@@ -211,7 +211,7 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
                 (BLACK_SQUARES & p.pawns(op)).popcount() - 4,
             )
         };
-        eval_data::add_both(e, sd, par.b_own_p * own_p_cnt + par.b_opp_p * opp_p_cnt);
+        e.add_both(sd, par.b_own_p * own_p_cnt + par.b_opp_p * opp_p_cnt);
     }
 
     // === Rook eval ===
@@ -322,7 +322,7 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
             e.att[si] += par.q_att2 * (bb_attack & (bb_zone & e.p_takes[oi])).popcount();
         }
 
-        let cnt = (bb_control & !bb_excluded).popcount() as usize;
+        let cnt = (bb_control & !bb_excluded).popcount().min(27) as usize;
         mob_mg += par.q_mob_mg[cnt];
         mob_eg += par.q_mob_eg[cnt];
 
@@ -343,31 +343,23 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
     }
 
     // Weight and add
-    eval_data::add(
-        e,
+    e.add(
         sd,
         (par.sd_mob[si] * mob_mg) / 100,
         (par.sd_mob[si] * mob_eg) / 100,
     );
-    eval_data::add(
-        e,
+    e.add(
         sd,
         (par.w_tropism * tropism_mg) / 100,
         (par.w_tropism * tropism_eg) / 100,
     );
-    eval_data::add(
-        e,
+    e.add(
         sd,
         (par.w_lines * lines_mg) / 100,
         (par.w_lines * lines_eg) / 100,
     );
     let fc = fwd_cnt.min(15);
-    eval_data::add(
-        e,
-        sd,
-        (par.w_fwd * pst::FWD_BONUS[fc] * fwd_weight) / 100,
-        0,
-    );
-    eval_data::add_both(e, sd, (par.w_outposts * outpost) / 100);
-    eval_data::add(e, sd, (par.w_center * center_control) / 100, 0);
+    e.add(sd, (par.w_fwd * pst::FWD_BONUS[fc] * fwd_weight) / 100, 0);
+    e.add_both(sd, (par.w_outposts * outpost) / 100);
+    e.add(sd, (par.w_center * center_control) / 100, 0);
 }

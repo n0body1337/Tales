@@ -16,21 +16,17 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Transposition Table.cpp.
-// 4-bucket replacement with age-based eviction.
-// Full 64-bit keys for correctness .
+//! Transposition table — 4-bucket replacement with age-based eviction.
+//!
+//! Uses full 64-bit keys for correctness.
 
 use crate::board::moves::Move;
+use crate::board::types::MAX_EVAL;
 
 // TT flag constants
 pub const UPPER: u8 = 1; // alpha (fail-low)
 pub const LOWER: u8 = 2; // beta (fail-high)
 pub const EXACT: u8 = 3; // exact score
-
-pub const MAX_EVAL: i32 = 29999;
-pub const MATE: i32 = 32000;
-pub const INF: i32 = 32767;
-pub const MAX_PLY: usize = 64;
 
 // ============================================================================
 // TT Entry — full 64-bit key matching ENTRY struct.
@@ -64,6 +60,18 @@ pub struct TransTable {
 unsafe impl Send for TransTable {}
 unsafe impl Sync for TransTable {}
 
+/// Result of a TT probe — returned by `TransTable::retrieve()`.
+///
+/// - `best_move`: always valid when a matching entry is found
+/// - `score`, `flag`: only meaningful when `cutoff` is true (depth was sufficient)
+/// - `cutoff`: true when the stored bound proves the position can be pruned
+pub struct TtHit {
+    pub best_move: Move,
+    pub score: i32,
+    pub flag: u8,
+    pub cutoff: bool,
+}
+
 impl TransTable {
     pub fn new(mb_size: usize) -> Self {
         // Round down to power of 2
@@ -73,7 +81,10 @@ impl TransTable {
         }
 
         let num_entries = size * 1024 * 1024 / std::mem::size_of::<TtEntry>();
-        let mask = num_entries - 4; // 4-bucket alignment
+        // Mask ensures idx+3 stays within bounds for 4-bucket probing.
+        // Since num_entries is always a power of 2, (num_entries - 4) masks
+        // to bucket-aligned indices: idx & mask gives the first of 4 entries.
+        let mask = num_entries - 4;
 
         TransTable {
             table: vec![TtEntry::default(); num_entries],
@@ -85,9 +96,7 @@ impl TransTable {
 
     pub fn clear(&mut self) {
         self.tt_date = 0;
-        for entry in &mut self.table {
-            *entry = TtEntry::default();
-        }
+        self.table.fill(TtEntry::default());
     }
 
     pub fn new_search(&mut self) {
@@ -109,23 +118,17 @@ impl TransTable {
         let _ = ptr; // no-op on non-x86_64
     }
 
-    /// Retrieve from TT. Returns true if a usable cutoff was found.
-    /// Always fills `best_move` if a matching entry exists (even without cutoff).
-    /// Refreshes the entry's date on hit  using an unsafe
-    /// write to avoid requiring &mut self. This is safe because benign data
-    /// races on TT entries are standard in chess engines (Lazy SMP).
+    /// Probe the TT for a matching entry.
+    ///
+    /// Returns `Some(TtHit)` if an entry with the matching key is found.
+    /// The `cutoff` field indicates whether the stored bound allows pruning.
+    /// Returns `None` if no matching entry exists.
+    ///
+    /// Refreshes the entry's date on hit using an interior mutation.
+    /// This is safe because benign data races on TT entries are standard
+    /// in chess engines (Lazy SMP).
     #[inline]
-    pub fn retrieve(
-        &self,
-        key: u64,
-        best_move: &mut Move,
-        score: &mut i32,
-        flag: &mut u8,
-        alpha: i32,
-        beta: i32,
-        depth: i32,
-        ply: i32,
-    ) -> bool {
+    pub fn retrieve(&self, key: u64, alpha: i32, beta: i32, depth: i32, ply: i32) -> Option<TtHit> {
         let idx = (key as usize) & self.tt_mask;
 
         for i in 0..4 {
@@ -133,39 +136,55 @@ impl TransTable {
             // so idx+i is always within the table
             let entry = unsafe { self.table.get_unchecked(idx + i) };
             if entry.key == key {
-                // Refresh entry date to prevent premature eviction
-                // SAFETY: benign data race — standard in Lazy SMP chess engines.
+                // Refresh entry date to prevent premature eviction.
+                //
+                // This is technically UB (casting &T → *mut T), but is the standard
+                // pattern in chess engines for Lazy SMP. Using UnsafeCell<i16> for the
+                // date field would be formally correct but would break the #[repr(C)]
+                // guarantee and prevent the entry from being Copy/Default.
+                // The worst case is a stale date (harmless — entry just gets evicted
+                // earlier), and LLVM/x86 makes this a plain aligned store.
                 unsafe {
                     let entry_ptr = std::ptr::from_ref::<TtEntry>(entry).cast_mut();
                     (*entry_ptr).date = self.tt_date;
                 }
 
-                // Always grab the move
-                *best_move = Move(entry.best_move as u16);
+                let best_move = Move(entry.best_move as u16);
 
                 if entry.depth as i32 >= depth {
-                    *flag = entry.flags;
-                    *score = entry.score as i32;
+                    let mut score = entry.score as i32;
+                    let flag = entry.flags;
 
                     // Adjust mate scores for ply
-                    if *score < -MAX_EVAL {
-                        *score += ply;
-                    } else if *score > MAX_EVAL {
-                        *score -= ply;
+                    if score < -MAX_EVAL {
+                        score += ply;
+                    } else if score > MAX_EVAL {
+                        score -= ply;
                     }
 
                     // Check for cutoff
-                    if (entry.flags & UPPER != 0 && *score <= alpha)
-                        || (entry.flags & LOWER != 0 && *score >= beta)
-                    {
-                        return true;
-                    }
+                    let cutoff = (flag & UPPER != 0 && score <= alpha)
+                        || (flag & LOWER != 0 && score >= beta);
+
+                    return Some(TtHit {
+                        best_move,
+                        score,
+                        flag,
+                        cutoff,
+                    });
                 }
-                break;
+
+                // Entry found but depth insufficient — return move only
+                return Some(TtHit {
+                    best_move,
+                    score: 0,
+                    flag: 0,
+                    cutoff: false,
+                });
             }
         }
 
-        false
+        None
     }
 
     /// Retrieve only the best move (no score/cutoff check).

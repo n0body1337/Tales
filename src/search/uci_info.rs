@@ -16,10 +16,26 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-//! Search module — move ordering, alpha-beta, quiescence, iterative deepening, and threading.
+//! UCI info output helpers — score formatting and PV line printing.
 
-pub mod alphabeta;
-pub mod ordering;
-pub mod quiesce;
-pub mod threads;
-pub mod uci_info;
+use crate::board::moves::Move;
+use crate::board::types::{MATE, MAX_EVAL};
+
+/// Format a score for UCI output (centipawns or mate-in-N).
+pub fn format_score(score: i32) -> String {
+    if score > MAX_EVAL {
+        format!("score mate {}", (MATE - score + 1) / 2)
+    } else if score < -MAX_EVAL {
+        format!("score mate {}", -(MATE + score + 1) / 2)
+    } else {
+        format!("score cp {score}")
+    }
+}
+
+/// Print the PV portion of a UCI info line (space-separated moves).
+pub fn print_pv(pv: &[Move], max_len: usize) {
+    for mv in pv.iter().take(max_len).take_while(|m| m.is_some()) {
+        print!(" {}", mv.to_uci_string());
+    }
+    println!();
+}

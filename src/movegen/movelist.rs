@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// MoveList — stack-allocated scored move array.
-// Matches int list[] approach but with explicit struct.
+//! Stack-allocated scored move array for move generation and ordering.
 
 use crate::board::moves::Move;
 
@@ -48,9 +47,10 @@ impl Default for MoveList {
 impl MoveList {
     #[inline]
     pub fn new() -> Self {
-        // SAFETY: ScoredMove is Copy with no invariants. We never read
-        // beyond self.count, and push() always writes before reading.
-        unsafe { std::mem::zeroed() }
+        MoveList {
+            moves: [ScoredMove::default(); MAX_MOVES],
+            count: 0,
+        }
     }
 
     /// Add a move (unscored, score=0).

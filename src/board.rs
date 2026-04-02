@@ -16,7 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Board module — core types, bitboard, position representation
+//! Board module — core types, bitboard, position representation.
 
 pub mod attacks;
 pub mod bitboard;

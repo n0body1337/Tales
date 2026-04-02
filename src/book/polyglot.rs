@@ -16,15 +16,15 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Shared Polyglot helpers — used by both `internal` (embedded) and `external`
-// (disk-based) book modules.
-//
-// This module contains the canonical Polyglot Zobrist table, position hashing,
-// move decoding, and the weighted random selection logic. Everything here is
-// format-specific, not data-source-specific.
-//
-// All functions are `#[inline]` and with `lto = "fat"` in release builds,
-// cross-module calls are fully inlined — zero overhead.
+//! Shared Polyglot helpers — used by both [`internal`](super::internal) (embedded) and
+//! [`external`](super::external) (disk-based) book modules.
+//!
+//! Contains the canonical Polyglot Zobrist table, position hashing,
+//! move decoding, and weighted random selection logic. Everything here is
+//! format-specific, not data-source-specific.
+//!
+//! All functions are `#[inline]`; with `lto = "fat"` in release builds,
+//! cross-module calls are fully inlined — zero overhead.
 
 use crate::board::position::Position;
 use crate::board::types::*;
@@ -353,9 +353,9 @@ pub fn polyglot_key(pos: &Position) -> u64 {
 
 /// Decode a Polyglot 16-bit move into a "from-to" string (e.g. "e2e4", "e7e8q").
 ///
-/// Polyglot encoding:  bits [0:2] = to_file, [3:5] = to_rank,
-///                     bits [6:8] = from_file, [9:11] = from_rank,
-///                     bits [12:14] = promotion (0=none, 1=N, 2=B, 3=R, 4=Q)
+/// Polyglot encoding:  bits \[0:2\] = to_file, \[3:5\] = to_rank,
+///                     bits \[6:8\] = from_file, \[9:11\] = from_rank,
+///                     bits \[12:14\] = promotion (0=none, 1=N, 2=B, 3=R, 4=Q)
 ///
 /// Includes castling correction: Polyglot encodes castling as king → rook,
 /// but the engine expects king → destination (e.g. e1h1 → e1g1).

@@ -16,8 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Move ordering.
-// Staged move picker + history/killer/refutation heuristics.
+//! Move ordering — staged move picker with history, killer, and refutation heuristics.
 
 use crate::board::moves::*;
 use crate::board::position::Position;
@@ -25,13 +24,41 @@ use crate::board::types::*;
 use crate::movegen::generate;
 use crate::movegen::movelist::MoveList;
 use crate::movegen::see;
+use crate::{eval, tt::TransTable};
 
-// Move type flags returned by the picker
-pub const MV_HASH: i32 = 0;
-pub const MV_CAPTURE: i32 = 1;
-pub const MV_KILLER: i32 = 2;
-pub const MV_NORMAL: i32 = 3;
-pub const MV_BADCAPT: i32 = 4;
+use super::alphabeta::LmrTable;
+
+/// Per-thread search context — bundles all shared mutable resources
+/// that are threaded through the search tree unchanged.
+///
+/// The remaining per-call arguments (`pos`, `alpha`, `beta`, `depth`, `ply`, `pv`)
+/// stay as explicit function parameters since they change at every recursive call.
+pub struct SearchCtx<'a> {
+    /// Per-thread search state (history, killers, refutation, timing).
+    pub searcher: &'a mut Searcher,
+    /// Transposition table (shared across threads in SMP via raw pointer).
+    pub tt: &'a mut TransTable,
+    /// Immutable evaluation parameters.
+    pub par: &'a eval::params::EvalParams,
+    /// Per-thread evaluation hash.
+    pub eval_hash: &'a mut Vec<eval::EvalHashEntry>,
+    /// Per-thread pawn structure hash.
+    pub pawn_tt: &'a mut eval::pawn_hash::PawnHash,
+    /// Late-move reduction table (immutable, computed once per search).
+    pub lmr: &'a LmrTable,
+}
+
+/// Classification of a move returned by the staged picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MoveKind {
+    Hash = 0,
+    Capture = 1,
+    Killer = 2,
+    Normal = 3,
+    BadCapt = 4,
+    Refutation = 5,
+}
 
 // ============================================================================
 // MovePicker — 9-phase staged move generation
@@ -74,16 +101,16 @@ impl MovePicker {
         }
     }
 
-    /// NextMove — main staged move picker (for search). Returns (move, flag) or (NONE, 0).
-    pub fn next_move(&mut self, pos: &Position, history: &[[i32; 64]; 13]) -> (Move, i32) {
+    /// NextMove — main staged move picker (for search). Returns (move, kind).
+    pub fn next_move(&mut self, pos: &Position, history: &[[i32; 64]; 13]) -> (Move, MoveKind) {
         loop {
             match self.phase {
                 0 => {
                     // Phase 0: hash move
                     let mv = self.trans_move;
                     self.phase = 1;
-                    if !mv.is_none() && pos.legal(mv) {
-                        return (mv, MV_HASH);
+                    if mv.is_some() && pos.legal(mv) {
+                        return (mv, MoveKind::Hash);
                     }
                 }
                 1 => {
@@ -110,7 +137,7 @@ impl MovePicker {
                             }
                             continue;
                         }
-                        return (mv, MV_CAPTURE);
+                        return (mv, MoveKind::Capture);
                     }
                     self.phase = 3;
                 }
@@ -118,38 +145,38 @@ impl MovePicker {
                     // Phase 3: killer 1
                     let mv = self.killer1;
                     self.phase = 4;
-                    if !mv.is_none()
+                    if mv.is_some()
                         && mv != self.trans_move
                         && pos.pc[mv.to_sq() as usize] == NO_PC
                         && pos.legal(mv)
                     {
-                        return (mv, MV_KILLER);
+                        return (mv, MoveKind::Killer);
                     }
                 }
                 4 => {
                     // Phase 4: killer 2
                     let mv = self.killer2;
                     self.phase = 5;
-                    if !mv.is_none()
+                    if mv.is_some()
                         && mv != self.trans_move
                         && pos.pc[mv.to_sq() as usize] == NO_PC
                         && pos.legal(mv)
                     {
-                        return (mv, MV_KILLER);
+                        return (mv, MoveKind::Killer);
                     }
                 }
                 5 => {
                     // Phase 5: refutation move
                     let mv = self.ref_move;
                     self.phase = 6;
-                    if !mv.is_none()
+                    if mv.is_some()
                         && mv != self.trans_move
                         && pos.pc[mv.to_sq() as usize] == NO_PC
                         && mv != self.killer1
                         && mv != self.killer2
                         && pos.legal(mv)
                     {
-                        return (mv, MV_NORMAL);
+                        return (mv, MoveKind::Refutation);
                     }
                 }
                 6 => {
@@ -172,7 +199,7 @@ impl MovePicker {
                         {
                             continue;
                         }
-                        return (mv, MV_NORMAL);
+                        return (mv, MoveKind::Normal);
                     }
                     self.bad_next = 0;
                     self.phase = 8;
@@ -182,11 +209,11 @@ impl MovePicker {
                     if self.bad_next < self.bad_count {
                         let mv = self.bad[self.bad_next];
                         self.bad_next += 1;
-                        return (mv, MV_BADCAPT);
+                        return (mv, MoveKind::BadCapt);
                     }
-                    return (Move::NONE, 0);
+                    return (Move::NONE, MoveKind::Normal);
                 }
-                _ => return (Move::NONE, 0),
+                _ => return (Move::NONE, MoveKind::Normal),
             }
         }
     }
@@ -217,14 +244,14 @@ impl SpecialPicker {
         }
     }
 
-    pub fn next_move(&mut self, pos: &Position, history: &[[i32; 64]; 13]) -> (Move, i32) {
+    pub fn next_move(&mut self, pos: &Position, history: &[[i32; 64]; 13]) -> (Move, MoveKind) {
         loop {
             match self.phase {
                 0 => {
                     let mv = self.trans_move;
                     self.phase = 1;
-                    if !mv.is_none() && pos.legal(mv) {
-                        return (mv, MV_HASH);
+                    if mv.is_some() && pos.legal(mv) {
+                        return (mv, MoveKind::Hash);
                     }
                 }
                 1 => {
@@ -244,30 +271,30 @@ impl SpecialPicker {
                         if bad_capture(pos, mv) {
                             continue;
                         }
-                        return (mv, MV_CAPTURE);
+                        return (mv, MoveKind::Capture);
                     }
                     self.phase = 3;
                 }
                 3 => {
                     let mv = self.killer1;
                     self.phase = 4;
-                    if !mv.is_none()
+                    if mv.is_some()
                         && mv != self.trans_move
                         && pos.pc[mv.to_sq() as usize] == NO_PC
                         && pos.legal(mv)
                     {
-                        return (mv, MV_KILLER);
+                        return (mv, MoveKind::Killer);
                     }
                 }
                 4 => {
                     let mv = self.killer2;
                     self.phase = 5;
-                    if !mv.is_none()
+                    if mv.is_some()
                         && mv != self.trans_move
                         && pos.pc[mv.to_sq() as usize] == NO_PC
                         && pos.legal(mv)
                     {
-                        return (mv, MV_KILLER);
+                        return (mv, MoveKind::Killer);
                     }
                 }
                 5 => {
@@ -285,11 +312,11 @@ impl SpecialPicker {
                         if mv == self.trans_move || mv == self.killer1 || mv == self.killer2 {
                             continue;
                         }
-                        return (mv, MV_NORMAL);
+                        return (mv, MoveKind::Normal);
                     }
-                    return (Move::NONE, 0);
+                    return (Move::NONE, MoveKind::Normal);
                 }
-                _ => return (Move::NONE, 0),
+                _ => return (Move::NONE, MoveKind::Normal),
             }
         }
     }
@@ -402,7 +429,7 @@ pub struct Searcher {
     pub root_depth: i32,
     pub dp_completed: i32,
     pub seldepth: usize, // max ply reached (selective depth)
-    pub fl_root_choice: bool,
+    pub has_root_choice: bool,
     pub pv_eng: [Move; 2], // engine's best/ponder moves
     pub nodes: u64,
     pub abort_search: bool,
@@ -415,6 +442,9 @@ pub struct Searcher {
     pub avoid_moves: [Move; 65], // moves to skip in SearchRoot (for MultiPV)
     pub avoid_count: usize,      // number of avoid moves
     pub multi_pv: usize,         // number of PV lines to search
+    pub is_pondering: bool,      // true when searching in ponder mode
+    pub ponder_time_ms: u64,     // real time limit to apply on ponderhit
+    pub ponder_enabled: bool,    // UCI Ponder option — controls bestmove ponder output
 }
 
 impl Searcher {
@@ -426,7 +456,7 @@ impl Searcher {
             root_depth: 0,
             dp_completed: 0,
             seldepth: 0,
-            fl_root_choice: false,
+            has_root_choice: false,
             pv_eng: [Move::NONE; 2],
             nodes: 0,
             abort_search: false,
@@ -439,26 +469,23 @@ impl Searcher {
             avoid_moves: [Move::NONE; 65],
             avoid_count: 0,
             multi_pv: 1,
+            is_pondering: false,
+            ponder_time_ms: 0,
+            ponder_enabled: false,
         }
     }
 
     pub fn clear_all(&mut self) {
-        // SAFETY: history is [[i32; 64]; 13] — all-zeros is valid for i32.
-        // Move is repr(transparent) u32 wrapper, Move::NONE = Move(0),
-        // so zeroing is equivalent to filling with Move::NONE.
-        unsafe {
-            std::ptr::write_bytes(self.history.as_mut_ptr(), 0, self.history.len());
-            std::ptr::write_bytes(self.refutation.as_mut_ptr(), 0, self.refutation.len());
-            std::ptr::write_bytes(self.killer.as_mut_ptr(), 0, self.killer.len());
-        }
+        self.history.iter_mut().for_each(|row| row.fill(0));
+        self.refutation
+            .iter_mut()
+            .for_each(|row| row.fill(Move::NONE));
+        self.killer.fill([Move::NONE; 2]);
         self.clear_avoid_list();
     }
 
     pub fn clear_avoid_list(&mut self) {
-        // SAFETY: Move::NONE = Move(0), zeroing is equivalent to filling with NONE
-        unsafe {
-            std::ptr::write_bytes(self.avoid_moves.as_mut_ptr(), 0, self.avoid_moves.len());
-        }
+        self.avoid_moves.fill(Move::NONE);
         self.avoid_count = 0;
     }
 
@@ -470,29 +497,16 @@ impl Searcher {
     }
 
     pub fn is_avoid_move(&self, mv: Move) -> bool {
-        for i in 0..self.avoid_count {
-            if self.avoid_moves[i] == mv {
-                return true;
-            }
-        }
-        false
+        self.avoid_moves[..self.avoid_count].contains(&mv)
     }
 
     pub fn age_hist(&mut self) {
-        for pc in 0..13 {
-            for sq in 0..64 {
-                self.history[pc][sq] /= 8;
-            }
-        }
+        self.history.iter_mut().flatten().for_each(|v| *v /= 8);
         self.killer = [[Move::NONE; 2]; MAX_PLY];
     }
 
     fn trim_hist(&mut self) {
-        for pc in 0..13 {
-            for sq in 0..64 {
-                self.history[pc][sq] /= 2;
-            }
-        }
+        self.history.iter_mut().flatten().for_each(|v| *v /= 2);
     }
 
     #[inline]
@@ -521,7 +535,7 @@ impl Searcher {
         // Update refutation table.
         // Skip when last_move is NONE (null move / root) or SENTINEL (quiescence).
         // Only update counter-moves when a valid previous move exists (0 = null move, -1 = skip).
-        if !last_move.is_none() && last_move.0 != u16::MAX {
+        if last_move.is_some() && last_move != Move::SENTINEL {
             let lf = last_move.from_sq() as usize;
             let lt = last_move.to_sq() as usize;
             self.refutation[lf][lt] = mv;
@@ -558,25 +572,34 @@ impl Searcher {
         self.refutation[mv.from_sq() as usize][mv.to_sq() as usize]
     }
 
+    /// Interval (in nodes) between timeout checks.
+    const TIMEOUT_CHECK_INTERVAL: u64 = 16383;
+
     /// Check if we should abort due to time, node limit, or NPS limit.
     #[inline]
     pub fn check_timeout(&mut self) {
-        if self.nodes & 16383 == 0 {
+        if self.nodes & Self::TIMEOUT_CHECK_INTERVAL == 0 {
             let elapsed = self.start_time.elapsed().as_millis() as u64;
 
-            // Time limit
-            if elapsed >= self.time_limit_ms {
+            // Time limit (not enforced while pondering)
+            if !self.is_pondering && elapsed >= self.time_limit_ms {
                 self.abort_search = true;
                 return; // short-circuit: skip remaining checks once we're stopping
             }
 
-            // Poll stdin for "stop"/"quit"
+            // Poll stdin for "stop"/"quit"/"ponderhit"
             if input_available() {
                 let mut cmd = String::new();
                 if std::io::stdin().read_line(&mut cmd).is_ok() {
                     let cmd = cmd.trim();
                     if cmd == "stop" || cmd == "quit" {
                         self.abort_search = true;
+                    } else if cmd == "ponderhit" {
+                        // Transition from ponder to normal search:
+                        // apply real time limit, reset start_time
+                        self.is_pondering = false;
+                        self.start_time = std::time::Instant::now();
+                        self.time_limit_ms = self.ponder_time_ms;
                     }
                 }
             }
@@ -647,9 +670,28 @@ fn input_available() -> bool {
 }
 
 /// Non-blocking check if stdin has data available (Unix version).
+/// Uses `poll(2)` with a zero timeout on stdin (fd 0).
 #[cfg(not(windows))]
 fn input_available() -> bool {
-    // On non-Windows platforms, skip stdin polling for now.
-    // The engine will still respond to time limits and node limits.
-    false
+    // Inline FFI to avoid adding `libc` as a crate dependency.
+    #[repr(C)]
+    struct PollFd {
+        fd: i32,
+        events: i16,
+        revents: i16,
+    }
+    const POLLIN: i16 = 0x0001;
+
+    extern "C" {
+        fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
+    }
+
+    let mut pfd = PollFd {
+        fd: 0, // stdin
+        events: POLLIN,
+        revents: 0,
+    };
+    // SAFETY: pfd is a valid stack-allocated struct; nfds=1; timeout=0 is non-blocking.
+    let ret = unsafe { poll(&mut pfd, 1, 0) };
+    ret > 0 && (pfd.revents & POLLIN) != 0
 }

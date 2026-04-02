@@ -16,9 +16,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Pawn structure evaluation — doubled, isolated, backward, passed, and candidate pawns.
+//! Pawn structure evaluation — doubled, isolated, backward, passed, and candidate pawns.
 
-use super::eval_data::{self, EvalData};
+use super::eval_data::EvalData;
 use super::params::{self, EvalParams};
 use super::pst;
 use crate::board::bitboard::*;
@@ -26,6 +26,7 @@ use crate::board::masks;
 use crate::board::position::Position;
 use crate::board::types::*;
 
+/// Evaluate pawn structure — doubled, isolated, backwards, chains, and candidates.
 pub fn evaluate_pawn_struct(
     p: &Position,
     e: &mut EvalData,
@@ -70,7 +71,7 @@ pub fn evaluate_pawn_struct(
     if p.is_on_sq(WC, P, G3) && (e.two_pawns_take[0] & Bitboard::from_sq(G5)).is_not_empty() {
         tmp -= par.p_badbind;
     }
-    eval_data::add(e, WC, tmp, 0);
+    e.add(WC, tmp, 0);
 
     tmp = 0;
     if (e.two_pawns_take[1] & Bitboard::from_sq(D4)).is_not_empty() {
@@ -91,34 +92,30 @@ pub fn evaluate_pawn_struct(
     if p.is_on_sq(BC, P, G6) && (e.two_pawns_take[1] & Bitboard::from_sq(G4)).is_not_empty() {
         tmp -= par.p_badbind;
     }
-    eval_data::add(e, BC, tmp, 0);
+    e.add(BC, tmp, 0);
 
     // King on empty wing
     let bb_all_pawns = p.pawns(WC) | p.pawns(BC);
     if bb_all_pawns.is_not_empty() {
         if (bb_all_pawns & masks::K_SIDE).is_empty() {
-            eval_data::add_pawns(
-                e,
+            e.add_pawns(
                 WC,
                 pst::EMPTY_KS[p.king_sq[0] as usize],
                 pst::EMPTY_KS[p.king_sq[0] as usize],
             );
-            eval_data::add_pawns(
-                e,
+            e.add_pawns(
                 BC,
                 pst::EMPTY_KS[p.king_sq[1] as usize],
                 pst::EMPTY_KS[p.king_sq[1] as usize],
             );
         }
         if (bb_all_pawns & masks::Q_SIDE).is_empty() {
-            eval_data::add_pawns(
-                e,
+            e.add_pawns(
                 WC,
                 pst::EMPTY_QS[p.king_sq[0] as usize],
                 pst::EMPTY_QS[p.king_sq[0] as usize],
             );
-            eval_data::add_pawns(
-                e,
+            e.add_pawns(
                 BC,
                 pst::EMPTY_QS[p.king_sq[1] as usize],
                 pst::EMPTY_QS[p.king_sq[1] as usize],
@@ -156,50 +153,48 @@ fn evaluate_pawns(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
     while bb_pieces.is_not_empty() {
         let sq = bb_pieces.pop_lsb();
         let front_span = get_front_span(Bitboard::from_sq(sq), sd);
-        let fl_unopposed = i32::from((front_span & p.pawns(op)).is_empty());
-        let fl_phalanx = (shift_sideways(Bitboard::from_sq(sq)) & p.pawns(sd)).is_not_empty();
-        let fl_defended = (Bitboard::from_sq(sq) & e.p_takes[si]).is_not_empty();
+        let is_unopposed = i32::from((front_span & p.pawns(op)).is_empty());
+        let is_phalanx = (shift_sideways(Bitboard::from_sq(sq)) & p.pawns(sd)).is_not_empty();
+        let is_defended = (Bitboard::from_sq(sq) & e.p_takes[si]).is_not_empty();
 
         // Candidate passers
-        if fl_unopposed != 0
-            && (fl_phalanx || fl_defended)
+        if is_unopposed != 0
+            && (is_phalanx || is_defended)
             && (masks::passed(sd, sq) & p.pawns(op)).popcount() == 1
         {
             let r = rank_of(sq) as usize;
-            eval_data::add_pawns(e, sd, par.cand_bonus_mg[si][r], par.cand_bonus_eg[si][r]);
+            e.add_pawns(sd, par.cand_bonus_mg[si][r], par.cand_bonus_eg[si][r]);
         }
 
         // Doubled pawn
         if (front_span & p.pawns(sd)).is_not_empty() {
-            eval_data::add_pawns(e, sd, par.db_mid, par.db_end);
+            e.add_pawns(sd, par.db_mid, par.db_end);
         }
 
         // Supported pawn
-        if fl_phalanx {
+        if is_phalanx {
             mass_mg += par.sp_pst[si][params::PHA_MG][sq as usize];
             mass_eg += par.sp_pst[si][params::PHA_EG][sq as usize];
-        } else if fl_defended {
+        } else if is_defended {
             mass_mg += par.sp_pst[si][params::DEF_MG][sq as usize];
             mass_eg += par.sp_pst[si][params::DEF_EG][sq as usize];
         }
 
         // Isolated pawn
         if (masks::adjacent(file_of(sq)) & p.pawns(sd)).is_empty() {
-            eval_data::add_pawns(e, sd, par.iso_mg + par.iso_of * fl_unopposed, par.iso_eg);
+            e.add_pawns(sd, par.iso_mg + par.iso_of * is_unopposed, par.iso_eg);
         }
         // Backward pawn
         else if (masks::supported(sd, sq) & p.pawns(sd)).is_empty() {
-            eval_data::add_pawns(
-                e,
+            e.add_pawns(
                 sd,
-                par.backward_malus_mg[file_of(sq) as usize] + par.bk_ope * fl_unopposed,
+                par.backward_malus_mg[file_of(sq) as usize] + par.bk_ope * is_unopposed,
                 par.bk_end,
             );
         }
     }
 
-    eval_data::add_pawns(
-        e,
+    e.add_pawns(
         sd,
         (mass_mg * par.w_mass) / 100,
         (mass_eg * par.w_mass) / 100,
@@ -213,10 +208,10 @@ fn evaluate_king(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
 
     // Normalize king square
     if (Bitboard::from_sq(sq) & masks::KS_CASTLE[sd.index()]).is_not_empty() {
-        sq = if sd == WC { G1 } else { G8 };
+        sq = sd.rel_sq(G1);
     }
     if (Bitboard::from_sq(sq) & masks::QS_CASTLE[sd.index()]).is_not_empty() {
-        sq = if sd == WC { B1 } else { B8 };
+        sq = sd.rel_sq(B1);
     }
 
     let bb_king_file = fill_north(Bitboard::from_sq(sq)) | fill_south(Bitboard::from_sq(sq));
@@ -231,13 +226,12 @@ fn evaluate_king(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
         evaluate_king_file(p, sd, bb_west, &mut shield, &mut storm, par);
     }
 
-    eval_data::add_pawns(
-        e,
+    e.add_pawns(
         sd,
         (par.w_shield * shield) / 100 + (par.w_storm * storm) / 100,
         0,
     );
-    eval_data::add_pawns(e, sd, evaluate_chains(p, par, sd), 0);
+    e.add_pawns(sd, evaluate_chains(p, par, sd), 0);
 }
 
 fn evaluate_king_file(
@@ -307,7 +301,7 @@ fn evaluate_chains(p: &Position, par: &EvalParams, sd: Color) -> i32 {
     let sq = p.king_sq[sd.index()];
     let mut mg_result = 0;
 
-    let rel = |s: i32| -> i32 { params::rel_sq(s as usize, sd) as i32 };
+    let rel = |s: i32| -> i32 { sd.rel_sq(s) };
     let owp = |s: i32| -> bool { p.is_on_sq(sd, P, rel(s)) };
     let opp = |s: i32| -> bool { p.is_on_sq(op, P, rel(s)) };
     let con = |bb: Bitboard, a: i32, b: i32| -> bool {

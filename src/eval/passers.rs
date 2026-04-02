@@ -16,9 +16,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Passed pawn evaluation — passed pawn bonuses and unstoppable pawn detection.
+//! Passed pawn evaluation — bonuses for passed pawns and unstoppable pawn detection.
 
-use super::eval_data::{self, EvalData};
+use super::eval_data::EvalData;
 use super::params::EvalParams;
 use crate::board::bitboard::*;
 use crate::board::distance;
@@ -26,6 +26,7 @@ use crate::board::masks;
 use crate::board::position::Position;
 use crate::board::types::*;
 
+/// Evaluate passed pawns — bonuses for advancement, king proximity, and free path.
 pub fn evaluate_passers(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
     let op = !sd;
     let si = sd.index();
@@ -42,7 +43,7 @@ pub fn evaluate_passers(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Co
         // Pawn threatening enemy minor
         if (bb_stop & p.occ_bb()).is_empty() && (bb_stop & e.p_can_take[oi]).is_empty() {
             if (pawn_attacks_bb(bb_stop, sd) & (p.bishops(op) | p.knights(op))).is_not_empty() {
-                eval_data::add_both(e, sd, par.p_thr);
+                e.add_both(sd, par.p_thr);
             }
             // Double pawn push threat
             if (bb_pawn & (RANK_2_BB | RANK_7_BB)).is_not_empty() {
@@ -51,7 +52,7 @@ pub fn evaluate_passers(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Co
                     && (next & e.p_can_take[oi]).is_empty()
                     && (pawn_attacks_bb(next, sd) & (p.bishops(op) | p.knights(op))).is_not_empty()
                 {
-                    eval_data::add_both(e, sd, par.p_thr);
+                    e.add_both(sd, par.p_thr);
                 }
             }
         }
@@ -89,68 +90,56 @@ pub fn evaluate_passers(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Co
         }
     }
 
-    eval_data::add(
-        e,
+    e.add(
         sd,
         (mg_tot * par.w_passers) / 100,
         (eg_tot * par.w_passers) / 100,
     );
 }
 
+/// Evaluate unstoppable passed pawns — determines if a passer reaches promotion first.
 pub fn evaluate_unstoppable(e: &mut EvalData, p: &Position) {
-    let mut w_dist = 8;
-    let mut b_dist = 8;
-
-    // White unstoppable
-    if p.cnt[1][N.index()] + p.cnt[1][B.index()] + p.cnt[1][R.index()] + p.cnt[1][Q.index()] == 0 {
-        let king_sq = p.king_sq(BC);
-        let tempo = i32::from(p.side == BC);
-        let mut bb = p.pawns(WC);
-        while bb.is_not_empty() {
-            let sq = bb.pop_lsb();
-            if (masks::passed(WC, sq) & p.pawns(BC)).is_empty() {
-                let bb_span = get_front_span(Bitboard::from_sq(sq), WC);
-                let pawn_sq = 56 + (sq & 7); // promotion square file
-                let prom_dist = 5.min(distance::metric(sq, pawn_sq));
-                if prom_dist < (distance::metric(king_sq, pawn_sq) - tempo) {
-                    let d = if (bb_span & p.kings(WC)).is_not_empty() {
-                        prom_dist + 1
-                    } else {
-                        prom_dist
-                    };
-                    w_dist = w_dist.min(d);
-                }
-            }
-        }
-    }
-
-    // Black unstoppable
-    if p.cnt[0][N.index()] + p.cnt[0][B.index()] + p.cnt[0][R.index()] + p.cnt[0][Q.index()] == 0 {
-        let king_sq = p.king_sq(WC);
-        let tempo = i32::from(p.side == WC);
-        let mut bb = p.pawns(BC);
-        while bb.is_not_empty() {
-            let sq = bb.pop_lsb();
-            if (masks::passed(BC, sq) & p.pawns(WC)).is_empty() {
-                let bb_span = get_front_span(Bitboard::from_sq(sq), BC);
-                let pawn_sq = sq & 7; // promotion square file on rank 1
-                let prom_dist = 5.min(distance::metric(sq, pawn_sq));
-                if prom_dist < (distance::metric(king_sq, pawn_sq) - tempo) {
-                    let d = if (bb_span & p.kings(BC)).is_not_empty() {
-                        prom_dist + 1
-                    } else {
-                        prom_dist
-                    };
-                    b_dist = b_dist.min(d);
-                }
-            }
-        }
-    }
+    let w_dist = unstoppable_distance(p, WC);
+    let b_dist = unstoppable_distance(p, BC);
 
     if w_dist < b_dist - 1 {
-        eval_data::add(e, WC, 0, 500);
+        e.add(WC, 0, 500);
     }
     if b_dist < w_dist - 1 {
-        eval_data::add(e, BC, 0, 500);
+        e.add(BC, 0, 500);
     }
+}
+
+/// Compute the minimum promotion distance of a side's unstoppable passed pawns.
+/// Returns 8 if no unstoppable passer exists.
+fn unstoppable_distance(p: &Position, sd: Color) -> i32 {
+    let op = !sd;
+    // Opponent must have no pieces (only king + pawns)
+    if p.count(op, N) + p.count(op, B) + p.count(op, R) + p.count(op, Q) != 0 {
+        return 8;
+    }
+
+    let king_sq = p.king_sq(op);
+    let tempo = i32::from(p.side == op);
+    let mut best = 8;
+    let mut bb = p.pawns(sd);
+
+    while bb.is_not_empty() {
+        let sq = bb.pop_lsb();
+        if (masks::passed(sd, sq) & p.pawns(op)).is_empty() {
+            let bb_span = get_front_span(Bitboard::from_sq(sq), sd);
+            // Promotion square: same file, on the opponent's back rank
+            let prom_sq = if sd == WC { 56 + (sq & 7) } else { sq & 7 };
+            let prom_dist = 5.min(distance::metric(sq, prom_sq));
+            if prom_dist < (distance::metric(king_sq, prom_sq) - tempo) {
+                let d = if (bb_span & p.kings(sd)).is_not_empty() {
+                    prom_dist + 1
+                } else {
+                    prom_dist
+                };
+                best = best.min(d);
+            }
+        }
+    }
+    best
 }

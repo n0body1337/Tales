@@ -16,7 +16,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// movegen module — move generation, move lists, and SEE.
+//! Move generation module — legal move generation, move lists, and SEE.
 
 pub mod generate;
 pub mod movelist;

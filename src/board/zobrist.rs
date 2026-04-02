@@ -16,8 +16,9 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Zobrist hashing.
-// Uses the same LCG: next = next * 1103515245 + 12345 (seed=1).
+//! Zobrist hashing.
+//!
+//! Uses a deterministic LCG: `next = next * 1103515245 + 12345` (seed = 1).
 
 use std::sync::OnceLock;
 

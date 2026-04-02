@@ -16,11 +16,10 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ============================================================================
 
-// Magic bitboard tables for slider attacks.
-// Magic bitboard slider attack tables (Pradyumna Kannan, shortened by Pawel Koziol).
-//
-// Architecture: Fancy magic — per-square index into a shared attack database.
-// Rook database: 102400 entries, Bishop database: 5248 entries.
+//! Magic bitboard slider attack tables (Pradyumna Kannan, shortened by Pawel Koziol).
+//!
+//! Architecture: Fancy magic — per-square index into a shared attack database.
+//! Rook database: 102,400 entries. Bishop database: 5,248 entries.
 
 use std::sync::OnceLock;
 
