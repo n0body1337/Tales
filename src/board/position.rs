@@ -693,11 +693,14 @@ impl Position {
         }
 
         // Repetition detection — walk back through the rep_list in steps of 2.
+        // rep_list.len() == 1024 (power of 2), so modulo is a bitmask AND.
+        const REP_MASK: usize = 1024 - 1;
         if self.rev_moves >= 4 {
-            let mut i = 4i32;
-            while i <= self.rev_moves {
-                let idx = (self.head - i as usize) % self.rep_list.len();
-                if self.hash_key == self.rep_list[idx] {
+            let mut i = 4usize;
+            while i <= self.rev_moves as usize {
+                let idx = (self.head.wrapping_sub(i)) & REP_MASK;
+                // SAFETY: idx is masked with REP_MASK (0..1023), always in bounds.
+                if self.hash_key == unsafe { *self.rep_list.get_unchecked(idx) } {
                     return true;
                 }
                 i += 2;
@@ -706,14 +709,13 @@ impl Position {
 
         // Insufficient material (no major pieces)
         if self.count(WC, Q) + self.count(BC, Q) + self.count(WC, R) + self.count(BC, R) == 0 {
-            // Guard against detecting draw in illegal positions
-            if !self.illegal() && self.count(WC, P) + self.count(BC, P) == 0 {
-                // KK or KmK
-                if self.count(WC, N) + self.count(BC, N) + self.count(WC, B) + self.count(BC, B)
+            // KK or KmK — check piece counts first (cheap), then illegal() (expensive)
+            if self.count(WC, P) + self.count(BC, P) == 0
+                && self.count(WC, N) + self.count(BC, N) + self.count(WC, B) + self.count(BC, B)
                     <= 1
-                {
-                    return true;
-                }
+                && !self.illegal()
+            {
+                return true;
             }
 
             // KPK draws

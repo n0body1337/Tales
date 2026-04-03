@@ -20,7 +20,7 @@
 
 use std::fmt;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, Shr};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use super::types::*;
 
@@ -376,16 +376,16 @@ pub fn b_double_pawn_attacks(bb: Bitboard) -> Bitboard {
 // ============================================================================
 
 /// Table of bitboards representing squares between two squares on a line.
-/// Computed from the standard Laser/CPW algorithm.
-/// Stored as a flattened array with indexing [sq1*64 + sq2].
-static BB_BETWEEN: OnceLock<Box<[Bitboard; 64 * 64]>> = OnceLock::new();
+static BB_BETWEEN: AtomicPtr<[Bitboard; 64 * 64]> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Get the between-ray bitboard for two squares.
 #[inline(always)]
 pub fn between(sq1: Square, sq2: Square) -> Bitboard {
-    let table = BB_BETWEEN.get().unwrap();
-    // SAFETY: indices are valid squares (0-63), so index < 4096.
-    unsafe { *table.get_unchecked((sq1 as usize) * 64 + sq2 as usize) }
+    // SAFETY: init_between() is always called before use; indices masked to valid range.
+    unsafe {
+        let table = &*BB_BETWEEN.load(Ordering::Relaxed);
+        *table.get_unchecked((sq1 as usize) * 64 + sq2 as usize)
+    }
 }
 
 /// Compute between-ray for two squares (from Laser / CPW).
@@ -415,5 +415,6 @@ pub fn init_between() {
             table[sq1 * 64 + sq2] = compute_between(sq1 as i32, sq2 as i32);
         }
     }
-    BB_BETWEEN.set(table).ok();
+    let table = Box::leak(table);
+    BB_BETWEEN.store(table as *mut [Bitboard; 64 * 64], Ordering::Release);
 }

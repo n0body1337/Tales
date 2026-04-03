@@ -92,7 +92,7 @@ pub fn quiesce_checks(
     }
 
     // MAIN LOOP — special moves (captures, killers, checks)
-    let mut new_pv = [Move::NONE; MAX_PLY];
+    let mut new_pv: [Move; MAX_PLY] = unsafe { std::mem::zeroed() };
     let mut picker =
         SpecialPicker::new(mv, ctx.searcher.killer[ply][0], ctx.searcher.killer[ply][1]);
 
@@ -191,7 +191,7 @@ pub fn quiesce_flee(
     }
 
     let mut best = -INF;
-    let mut new_pv = [Move::NONE; MAX_PLY];
+    let mut new_pv: [Move; MAX_PLY] = unsafe { std::mem::zeroed() };
     let mut picker = MovePicker::new(
         mv,
         Move::NONE,
@@ -310,7 +310,7 @@ pub fn quiesce(
     // CAPTURE LOOP
     let op = !pos.side;
     let mut picker = CapturesPicker::new(pos);
-    let mut new_pv = [Move::NONE; MAX_PLY];
+    let mut new_pv: [Move; MAX_PLY] = unsafe { std::mem::zeroed() };
 
     loop {
         let mv = picker.next();

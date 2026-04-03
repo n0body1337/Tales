@@ -321,34 +321,34 @@ pub const TP_VALUE: [i32; 7] = [100, 325, 325, 500, 1000, 0, 0];
 /// Phase values per piece type (used for game phase calculation)
 pub const PH_VALUE: [i32; 7] = [0, 1, 1, 2, 4, 0, 0];
 
-/// Castling mask table — initialized at startup.
+/// Castling mask table — compile-time constant.
 ///
 /// `castle_mask(sq)` is ANDed with current castling rights after any move from/to `sq`.
-static CASTLE_MASK_TABLE: std::sync::OnceLock<[CastlingRights; 64]> = std::sync::OnceLock::new();
+/// Most squares preserve all rights (15). Only rook corners and king squares clear rights.
+#[rustfmt::skip]
+static CASTLE_MASK_TABLE: [CastlingRights; 64] = {
+    let m = ALL_CASTLING; // 15 — preserves all castling rights
+    let mut t = [m; 64];
+    t[A1 as usize] = W_KS | B_KS | B_QS;  // 1|4|8 = 13 — clears W_QS
+    t[E1 as usize] = B_KS | B_QS;          // 4|8 = 12 — clears W_KS | W_QS
+    t[H1 as usize] = W_QS | B_KS | B_QS;  // 2|4|8 = 14 — clears W_KS
+    t[A8 as usize] = W_KS | W_QS | B_KS;  // 1|2|4 = 7  — clears B_QS
+    t[E8 as usize] = W_KS | W_QS;          // 1|2 = 3   — clears B_KS | B_QS
+    t[H8 as usize] = W_KS | W_QS | B_QS;  // 1|2|8 = 11 — clears B_KS
+    t
+};
 
 /// Get the castling mask for a given square.
 #[inline(always)]
 pub fn castle_mask(sq: i32) -> CastlingRights {
     debug_assert!((0..64).contains(&sq));
-    CASTLE_MASK_TABLE
-        .get()
-        .expect("init_castle_mask() not called")[sq as usize]
+    // SAFETY: sq is always a valid square (0-63), enforced by callers.
+    unsafe { *CASTLE_MASK_TABLE.get_unchecked(sq as usize) }
 }
 
-/// Initializes the castling mask table. Must be called once at startup.
+/// Backward-compatible init (now a no-op since the table is const).
 pub fn init_castle_mask() {
-    CASTLE_MASK_TABLE
-        .set({
-            let mut mask = [ALL_CASTLING; 64];
-            mask[A1 as usize] = W_KS | B_KS | B_QS;
-            mask[E1 as usize] = B_KS | B_QS;
-            mask[H1 as usize] = W_QS | B_KS | B_QS;
-            mask[A8 as usize] = W_KS | W_QS | B_KS;
-            mask[E8 as usize] = W_KS | W_QS;
-            mask[H8 as usize] = W_KS | W_QS | B_QS;
-            mask
-        })
-        .ok();
+    // No-op — CASTLE_MASK_TABLE is computed at compile time.
 }
 
 /// Formats a square as algebraic notation (e.g., `"e4"`), or `"-"` for [`NO_SQ`].

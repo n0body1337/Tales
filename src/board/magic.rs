@@ -21,7 +21,7 @@
 //! Architecture: Fancy magic — per-square index into a shared attack database.
 //! Rook database: 102,400 entries. Bishop database: 5,248 entries.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use super::bitboard::Bitboard;
 
@@ -34,11 +34,13 @@ struct MagicDb {
     rook: Vec<u64>,
 }
 
-static DB: OnceLock<Box<MagicDb>> = OnceLock::new();
+// Raw pointer — initialized once in init(), then zero-overhead access.
+static MAGIC_PTR: AtomicPtr<MagicDb> = AtomicPtr::new(std::ptr::null_mut());
 
 #[inline(always)]
 fn db() -> &'static MagicDb {
-    DB.get().unwrap()
+    // SAFETY: init() is always called before any slider attack lookup.
+    unsafe { &*MAGIC_PTR.load(Ordering::Relaxed) }
 }
 
 // Per-square offsets into the database arrays
@@ -400,8 +402,8 @@ pub fn init() {
             rook[index] = attacks;
         }
     }
-    let db = Box::new(MagicDb { bish, rook });
-    DB.set(db).ok();
+    let db = Box::leak(Box::new(MagicDb { bish, rook }));
+    MAGIC_PTR.store(db as *mut MagicDb, Ordering::Release);
 }
 
 /// Bishop attacks for a given square and occupancy.

@@ -18,7 +18,7 @@
 
 //! Pawn hash table — caches pawn structure evaluation results per engine instance.
 
-pub const PAWN_HASH_SIZE: usize = 1 << 16; // 65536 entries
+pub const PAWN_HASH_SIZE: usize = 1 << 18; // 262144 entries
 const PAWN_HASH_MASK: usize = PAWN_HASH_SIZE - 1;
 
 #[derive(Clone, Copy, Default)]

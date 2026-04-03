@@ -38,7 +38,7 @@ use eval_data::EvalData;
 use params::EvalParams;
 
 // MAX_EVAL is imported from board::types via glob.
-pub const EVAL_HASH_SIZE: usize = 1 << 16; // 65536 entries
+pub const EVAL_HASH_SIZE: usize = 1 << 18; // 262144 entries
 const EVAL_HASH_MASK: usize = EVAL_HASH_SIZE - 1;
 
 #[derive(Clone)]
@@ -58,7 +58,8 @@ pub fn evaluate(
 ) -> i32 {
     // Try eval hash
     let addr = (p.hash_key as usize) & EVAL_HASH_MASK;
-    let entry = &eval_tt[addr];
+    // SAFETY: addr is masked with EVAL_HASH_MASK, always < EVAL_HASH_SIZE.
+    let entry = unsafe { eval_tt.get_unchecked(addr) };
     if entry.key == p.hash_key {
         let sc = entry.score;
         return if p.side == WC { sc } else { -sc };
@@ -148,7 +149,8 @@ pub fn evaluate(
     score = score.clamp(-MAX_EVAL, MAX_EVAL);
 
     // Save to eval hash
-    let entry = &mut eval_tt[addr];
+    // SAFETY: addr is masked with EVAL_HASH_MASK, always < EVAL_HASH_SIZE.
+    let entry = unsafe { eval_tt.get_unchecked_mut(addr) };
     entry.key = p.hash_key;
     entry.score = score;
 

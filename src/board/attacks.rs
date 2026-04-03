@@ -18,7 +18,7 @@
 
 //! Attack generation — leaper attack tables and slider attack wrappers.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use super::bitboard::*;
 use super::magic;
@@ -34,11 +34,15 @@ struct LeaperTables {
     king_attacks: [Bitboard; 64],
 }
 
-static TABLES: OnceLock<Box<LeaperTables>> = OnceLock::new();
+// Raw pointer — initialized once in init(), then accessed with zero overhead.
+static LEAPER_PTR: AtomicPtr<LeaperTables> = AtomicPtr::new(std::ptr::null_mut());
 
 #[inline(always)]
 fn tables() -> &'static LeaperTables {
-    TABLES.get().unwrap()
+    // SAFETY: init() is always called before any attack lookup.
+    // After init(), LEAPER_PTR is a valid, aligned, non-null pointer
+    // to a leaked Box that lives for the entire program.
+    unsafe { &*LEAPER_PTR.load(Ordering::Relaxed) }
 }
 
 /// Initialize leaper attack tables. Called from board::init().
@@ -76,7 +80,8 @@ pub fn init() {
         }
         t
     });
-    TABLES.set(t).ok();
+    let t = Box::leak(t);
+    LEAPER_PTR.store(t as *mut LeaperTables, Ordering::Release);
 }
 
 // ============================================================================

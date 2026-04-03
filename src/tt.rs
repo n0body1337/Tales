@@ -131,21 +131,16 @@ impl TransTable {
     pub fn retrieve(&self, key: u64, alpha: i32, beta: i32, depth: i32, ply: i32) -> Option<TtHit> {
         let idx = (key as usize) & self.tt_mask;
 
-        for i in 0..4 {
-            // SAFETY: idx is masked with tt_mask (size-4), and i < 4,
-            // so idx+i is always within the table
-            let entry = unsafe { self.table.get_unchecked(idx + i) };
+        // SAFETY: idx is masked with tt_mask (size-4), so idx..idx+3 are all within
+        // the table. We compute a raw pointer once and iterate with offset.
+        let base = unsafe { self.table.as_ptr().add(idx) };
+
+        for i in 0..4u32 {
+            let entry = unsafe { &*base.add(i as usize) };
             if entry.key == key {
                 // Refresh entry date to prevent premature eviction.
-                //
-                // This is technically UB (casting &T → *mut T), but is the standard
-                // pattern in chess engines for Lazy SMP. Using UnsafeCell<i16> for the
-                // date field would be formally correct but would break the #[repr(C)]
-                // guarantee and prevent the entry from being Copy/Default.
-                // The worst case is a stale date (harmless — entry just gets evicted
-                // earlier), and LLVM/x86 makes this a plain aligned store.
                 unsafe {
-                    let entry_ptr = std::ptr::from_ref::<TtEntry>(entry).cast_mut();
+                    let entry_ptr = (base.add(i as usize)) as *mut TtEntry;
                     (*entry_ptr).date = self.tt_date;
                 }
 
@@ -192,15 +187,14 @@ impl TransTable {
     #[inline]
     pub fn retrieve_move(&self, key: u64) -> Move {
         let idx = (key as usize) & self.tt_mask;
+        let base = unsafe { self.table.as_ptr().add(idx) };
 
-        for i in 0..4 {
-            // SAFETY: idx is masked with tt_mask (size-4), and i < 4,
-            // so idx+i is always within the table
-            let entry = unsafe { self.table.get_unchecked(idx + i) };
+        for i in 0..4u32 {
+            let entry = unsafe { &*base.add(i as usize) };
             if entry.key == key {
-                // Refresh date (see retrieve() for safety justification)
+                // Refresh date
                 unsafe {
-                    let entry_ptr = std::ptr::from_ref::<TtEntry>(entry).cast_mut();
+                    let entry_ptr = (base.add(i as usize)) as *mut TtEntry;
                     (*entry_ptr).date = self.tt_date;
                 }
                 return Move(entry.best_move as u16);
@@ -221,21 +215,20 @@ impl TransTable {
         }
 
         let idx = (key as usize) & self.tt_mask;
-        let mut replace_idx = idx;
+        let base = unsafe { self.table.as_ptr().add(idx) };
+        let mut replace_idx = 0usize;
         let mut oldest = -1i32;
         let mut mv_raw = mv.0 as i16;
 
-        for i in 0..4 {
-            // SAFETY: idx is masked with tt_mask (size-4), and i < 4,
-            // so idx+i is always within the table
-            let entry = unsafe { self.table.get_unchecked(idx + i) };
+        for i in 0..4usize {
+            let entry = unsafe { &*base.add(i) };
 
             // Exact key match — always replace
             if entry.key == key {
                 if mv_raw == 0 {
                     mv_raw = entry.best_move;
                 }
-                replace_idx = idx + i;
+                replace_idx = i;
                 break;
             }
 
@@ -244,13 +237,12 @@ impl TransTable {
                 - entry.depth as i32;
             if age > oldest {
                 oldest = age;
-                replace_idx = idx + i;
+                replace_idx = i;
             }
         }
 
-        // SAFETY: replace_idx was set within the [idx..idx+4] range
-        // which is guaranteed by the tt_mask
-        let replace = unsafe { self.table.get_unchecked_mut(replace_idx) };
+        // SAFETY: replace_idx is in 0..4, and base+replace_idx is within the table.
+        let replace = unsafe { &mut *(base.add(replace_idx) as *mut TtEntry) };
         replace.key = key;
         replace.date = self.tt_date;
         replace.best_move = mv_raw;

@@ -109,11 +109,13 @@ pub fn search_root(
     depth: i32,
     pv: &mut [Move],
 ) -> i32 {
-    let mut new_pv: [Move; MAX_PLY] = [Move::NONE; MAX_PLY];
+    // SAFETY: std::mem::zeroed() produces [Move(0); N] == [Move::NONE; N].
+    // Move is repr(transparent) over u16 and Move::NONE == Move(0), so all-zeros is valid.
+    let mut new_pv: [Move; MAX_PLY] = unsafe { std::mem::zeroed() };
     let mut best = -INF;
     let mut mv_tried = 0usize;
     // Quiet moves tried so far — used for history penalty on cutoff.
-    let mut mv_quiet = [Move::NONE; MAX_MOVES];
+    let mut mv_quiet: [Move; MAX_MOVES] = unsafe { std::mem::zeroed() };
     let mut quiet_tried = 0usize;
 
     let is_pv = alpha != beta - 1;
@@ -478,10 +480,12 @@ pub fn search(
     let was_null = frame.was_null;
     let last_move = frame.last_move;
     let last_capt_sq = frame.last_capt_sq;
-    let mut new_pv: [Move; MAX_PLY] = [Move::NONE; MAX_PLY];
+    // SAFETY: std::mem::zeroed() produces [Move(0); N] == [Move::NONE; N].
+    // Move is repr(transparent) over u16 and Move::NONE == Move(0), so all-zeros is valid.
+    let mut new_pv: [Move; MAX_PLY] = unsafe { std::mem::zeroed() };
     let mut mv_tried = 0usize;
     // Quiet moves tried so far — used for history penalty on cutoff.
-    let mut mv_quiet = [Move::NONE; MAX_MOVES];
+    let mut mv_quiet: [Move; MAX_MOVES] = unsafe { std::mem::zeroed() };
     let mut quiet_tried = 0usize;
     let mut ref_sq: i32 = -1;
 
@@ -884,8 +888,8 @@ pub fn search(
                 reduction += 1;
             }
 
-            // decrease reduction on good history score
-            if mv_hist_score > ctx.par.hist_limit && reduction > 0 {
+            // decrease reduction on good history score (but never fully cancel LMR)
+            if mv_hist_score > ctx.par.hist_limit && reduction >= 2 {
                 reduction -= 1;
             }
 

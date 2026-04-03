@@ -47,10 +47,9 @@ impl Default for MoveList {
 impl MoveList {
     #[inline]
     pub fn new() -> Self {
-        MoveList {
-            moves: [ScoredMove::default(); MAX_MOVES],
-            count: 0,
-        }
+        // SAFETY: ScoredMove { mv: Move(0), score: 0 } is the default,
+        // so all-zeros memory is a valid MoveList.
+        unsafe { std::mem::zeroed() }
     }
 
     /// Add a move (unscored, score=0).
