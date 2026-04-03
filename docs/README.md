@@ -333,7 +333,6 @@ Profiled with **samply** (ETW sampling at 8kHz) with MAP file symbol resolution 
 
 - Comprehensive architectural audit — removed orphaned scope blocks, deduplicated evaluation logic, standardized naming conventions
 - Full CI test suite covering perft, search correctness, and evaluation parity
-- Verified via 20-game tournament match against OpenTal (12.0-8.0)
 
 ---
 
