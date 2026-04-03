@@ -1,6 +1,6 @@
 # Tales
 
-**Tales** is a UCI chess engine written in Rust, ported from [Rodent IV](https://github.com/nescitus/rodent-iv) with full mathematical parity. It features an aggressive, Tal-inspired playing style with tunable personality parameters.
+**Tales** is a UCI chess engine written in Rust, ported from [OpenTal](https://github.com/nescitus/OpenTal) with full mathematical parity. It features an aggressive, Tal-inspired playing style with tunable personality parameters.
 
 ## Features
 
@@ -83,7 +83,7 @@ go movetime 5000
 ### Codebase Quality
 - Comprehensive architectural audit — removed orphaned scope blocks, deduplicated evaluation logic, standardized naming conventions
 - Full CI test suite: 149 tests covering perft, search correctness, and evaluation parity
-- Verified via 20-game tournament matches against Rodent IV (10-0) and OpenTal (12.0-8.0)
+- Verified via 20-game tournament matches against OpenTal (12.0-8.0)
 
 ## Architecture
 
