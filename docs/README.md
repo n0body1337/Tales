@@ -10,8 +10,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" />
+  <img src="https://img.shields.io/badge/edition-2024-orange?style=flat-square&logo=rust" />
   <img src="https://img.shields.io/badge/protocol-UCI-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/version-1.0a-green?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-1.1.0--alpha-green?style=flat-square" />
   <img src="https://img.shields.io/badge/license-GPL--3.0-red?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=flat-square" />
 </p>
@@ -144,9 +145,11 @@ Every module was **profiled with flamegraph analysis** and optimized for maximum
 
 | Optimization | Description |
 |:---|:---|
-| **`MaybeUninit` move arrays** | Eliminates zeroing overhead for `[Move; 256]` arrays in the search loop |
-| **`get_unchecked` indexing** | Bounds-check elimination across TT probes, eval hash, move ordering |
-| **TT prefetch** | `_mm_prefetch` hints before TT probes — cache line loaded during `in_check()` computation |
+| **`OnceLock` → `AtomicPtr`** | Eliminated atomic-load + unwrap overhead from the three hottest lookup tables (leaper attacks, magic bitboards, between-rays) — single largest win at ~14% |
+| **Compile-time castle mask** | `castle_mask()` table is now a `const` array instead of runtime `OnceLock`, removing overhead from every `do_move()` call |
+| **`get_unchecked` indexing** | Bounds-check elimination across TT probes, eval hash, repetition list, and move ordering |
+| **TT pointer arithmetic** | Transposition table 4-bucket probe uses raw pointer iteration instead of per-bucket index computation |
+| **`std::mem::zeroed()` arrays** | Eliminates redundant initialization of `MoveList` (~2KB), PV arrays, and quiet move arrays in the search loop |
 | **4-bucket TT** | Age-based replacement with 64-bit full keys for correctness |
 | **Stack-allocated arrays** | All move lists and PV arrays are fixed-size on the stack — zero heap allocation in the search |
 | **Incremental PST scoring** | Position scores updated incrementally during `do_move` / `undo_move` |
@@ -169,7 +172,8 @@ panic = "abort"
 
 ### Results
 
-- **~2 million nodes per second** on standard hardware
+- **~1.77 million nodes per second** (single-threaded) on standard hardware
+- **18% NPS improvement** in v1.1.0-alpha via profiler-guided hot-path optimization (samply + MAP symbol resolution)
 - **30%+ throughput increase** over the C++ OpenTal engine
 - **Zero** crashes, zero illegal moves across 10,000+ tested plies
 
@@ -300,7 +304,40 @@ src/
 
 ---
 
-## 🆕 What's New in 1.0a
+## 🆕 What's New in v1.1.0-alpha
+
+### Rust 2024 Edition
+
+- Migrated the entire codebase to **Rust edition 2024** (requires rustc 1.94.1+)
+- Modernized patterns throughout: replaced legacy `unsafe` blocks and C-style idioms with idiomatic Rust 2024 patterns
+- Introduced `SearchCtx` and `SearchFrame` structs for cleaner search API ergonomics, replacing the previous `too_many_arguments` pattern
+
+### Full Ponder Support
+
+- Implemented complete UCI **ponder** functionality
+- The engine searches in the background on the expected opponent reply
+- On `ponderhit`, the search transitions seamlessly to normal time-controlled mode
+- Correctly reports `bestmove` + `ponder` move pairs
+
+### Performance Optimizations (+18% NPS)
+
+Profiled with **samply** (ETW sampling at 8kHz) with MAP file symbol resolution and rustfilt demangling. Key optimizations based on resolved profile data (14,811 samples):
+
+- **`OnceLock` → `AtomicPtr`** for leaper attacks, magic bitboards, and between-ray tables — the single largest win (~14% alone). `Ordering::Relaxed` compiles to a plain `mov` instruction on x86-64, vs the previous `Acquire` atomic load + `Option::unwrap()` branch
+- **Compile-time `castle_mask`** — converted from runtime `OnceLock` to a `const` array, eliminating overhead from every `do_move()` call
+- **Unchecked hot-path access** — `get_unchecked` for eval hash, repetition list, and attack table lookups where indices are provably in-bounds
+- **TT pointer arithmetic** — transposition table probe uses raw pointer iteration instead of per-bucket index computation
+- **Stack allocation reduction** — `std::mem::zeroed()` for `MoveList` (~2KB), PV arrays, and quiet move arrays, eliminating redundant initialization at millions of nodes/sec
+
+### Codebase Quality
+
+- Comprehensive architectural audit — removed orphaned scope blocks, deduplicated evaluation logic, standardized naming conventions
+- Full CI test suite covering perft, search correctness, and evaluation parity
+- Verified via 20-game tournament match against OpenTal (12.0-8.0)
+
+---
+
+## 📋 What's New in 1.0a
 
 ### External Opening Book Support
 
