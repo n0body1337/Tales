@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" />
   <img src="https://img.shields.io/badge/edition-2024-orange?style=flat-square&logo=rust" />
   <img src="https://img.shields.io/badge/protocol-UCI-blue?style=flat-square" />
-  <img src="https://img.shields.io/badge/version-1.1.0--alpha-green?style=flat-square" />
+  <img src="https://img.shields.io/badge/version-1.2-green?style=flat-square" />
   <img src="https://img.shields.io/badge/license-GPL--3.0-red?style=flat-square" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=flat-square" />
 </p>
@@ -304,7 +304,7 @@ src/
 
 ---
 
-## 🆕 What's New in v1.1.0-alpha
+## 🆕 What's New in v1.2
 
 ### Rust 2024 Edition
 
