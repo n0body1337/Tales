@@ -880,9 +880,12 @@ pub fn search(
             }
         }
 
-        // FUTILITY PRUNING
+        // FUTILITY PRUNING — sacrificial quiet moves are exempt so the
+        // search actually evaluates them instead of cutting them based on
+        // static eval + margin.
         if do_futility
             && !child_in_check
+            && !was_sac
             && mv_hist_score < ctx.par.hist_limit
             && mv_type == MoveKind::Normal
             && mv_tried > 1
@@ -891,11 +894,14 @@ pub fn search(
             continue;
         }
 
-        // LATE MOVE PRUNING
+        // LATE MOVE PRUNING — sacrificial quiet moves are exempt. LMP is
+        // otherwise the single biggest killer of Tal-style moves because
+        // they are usually ordered late (SEE-negative, low history).
         if can_prune
             && depth <= 3
             && quiet_tried > (3 * depth) as usize
             && !child_in_check
+            && !was_sac
             && mv_hist_score < ctx.par.hist_limit
             && mv_type == MoveKind::Normal
         {
@@ -946,6 +952,13 @@ pub fn search(
 
             // decrease reduction on good history score (but never fully cancel LMR)
             if mv_hist_score > ctx.par.hist_limit && reduction >= 2 {
+                reduction -= 1;
+            }
+
+            // Sacrificial quiet moves get one ply less reduction than the
+            // LMR table prescribes. Full skip would cost too many nodes;
+            // -1 is a signal that the move deserves closer inspection.
+            if was_sac && reduction > 0 {
                 reduction -= 1;
             }
 
