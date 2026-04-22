@@ -1,0 +1,555 @@
+// ============================================================================
+// Tales - UCI chess engine written in Rust
+// Copyright (C) 2025-2026 Andre MARTINS
+//
+// Tales is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// Tales is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along
+// with this program. If not, see <https://www.gnu.org/licenses/>.
+// ============================================================================
+
+//! EPD test-suite runner — parses an EPD file, runs a fixed-time search per
+//! position with the opening book disabled, and reports pass rate against
+//! the `bm` (best-move) opcode.
+//!
+//! Invocation: `tales --suite <path> --time <ms> [--hash <mb>] [--verbose] [--csv <path>]`
+//!
+//! The runner deliberately does NOT go through `parse_go`, so neither the
+//! internal nor the external opening book is ever probed during the suite —
+//! a book hit on any position would short-circuit the search and produce
+//! false-positive (or false-negative) results.
+
+use std::time::Instant;
+
+use crate::board::moves::*;
+use crate::board::position::{Position, Undo};
+use crate::board::types::*;
+use crate::eval;
+use crate::movegen::generate;
+use crate::movegen::movelist::MoveList;
+use crate::search;
+use crate::tt::TransTable;
+
+// ============================================================================
+// EPD record
+// ============================================================================
+
+/// One parsed EPD line.
+struct EpdRecord {
+    /// FEN portion (the first 4 fields, plus optional clocks).
+    fen: String,
+    /// `bm` (best move) target, in SAN, with annotations stripped.
+    bm: String,
+    /// `id` opcode value (for reporting). Empty if absent.
+    id: String,
+}
+
+// ============================================================================
+// EPD parser
+// ============================================================================
+
+/// Strip trailing PGN/SAN annotations (`+`, `#`, `!`, `?`, `!!`, `??`, `!?`, `?!`)
+/// so two SAN strings can be compared by piece+square+disambig only.
+fn strip_san_annotations(s: &str) -> String {
+    s.trim_end_matches(['+', '#', '!', '?']).to_string()
+}
+
+/// Parse a single EPD line. Returns `None` for blank/comment lines.
+///
+/// Format: `<piece-placement> <stm> <castling> <ep> [opcode value; ...]`
+/// Recognized opcodes: `bm`, `id`. Quoted values supported for `id`/`c0`.
+fn parse_epd_line(line: &str) -> Option<EpdRecord> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+
+    // Split into FEN and opcodes at the 4th space (after EP square).
+    let mut spaces = 0;
+    let mut split_at = 0;
+    for (i, ch) in line.char_indices() {
+        if ch == ' ' {
+            spaces += 1;
+            if spaces == 4 {
+                split_at = i;
+                break;
+            }
+        }
+    }
+    if split_at == 0 {
+        return None;
+    }
+
+    let fen = line[..split_at].to_string();
+    let rest = line[split_at + 1..].trim();
+
+    // Tokenize opcodes: each ends with a `;`. Values may be quoted.
+    let mut bm = String::new();
+    let mut id = String::new();
+    for opc in rest.split(';') {
+        let opc = opc.trim();
+        if opc.is_empty() {
+            continue;
+        }
+        // Split on the first whitespace into (name, value).
+        let (name, value) = match opc.split_once(char::is_whitespace) {
+            Some((n, v)) => (n, v.trim()),
+            None => (opc, ""),
+        };
+        // Strip surrounding quotes if any.
+        let value = value.trim_matches('"');
+        match name {
+            "bm" => bm = strip_san_annotations(value.split_whitespace().next().unwrap_or("")),
+            "id" => id = value.to_string(),
+            _ => {}
+        }
+    }
+
+    if bm.is_empty() {
+        return None;
+    }
+    Some(EpdRecord { fen, bm, id })
+}
+
+// ============================================================================
+// SAN converter — `Move` ↔ algebraic notation
+// ============================================================================
+
+/// Build a list of fully-legal moves at the current position (captures + quiet).
+fn legal_moves(pos: &mut Position) -> Vec<Move> {
+    let mut list = MoveList::new();
+    generate::generate_captures(pos, &mut list);
+    generate::generate_quiet(pos, &mut list);
+    let mut out = Vec::with_capacity(list.count);
+    for i in 0..list.count {
+        let mv = list.get(i);
+        let mut u = Undo::new();
+        pos.do_move(mv, &mut u);
+        let illegal = pos.illegal();
+        pos.undo_move(mv, &u);
+        if !illegal {
+            out.push(mv);
+        }
+    }
+    out
+}
+
+/// Render a `Move` as SAN, *without* the trailing `+`/`#` suffix.
+///
+/// The check/mate suffix is intentionally omitted because it is redundant for
+/// move identification and our matcher strips annotations from both sides
+/// before comparison.
+fn move_to_san(pos: &mut Position, mv: Move, legal: &[Move]) -> String {
+    let from = mv.from_sq();
+    let to = mv.to_sq();
+    let ftp = pos.tp_on_sq(from);
+    let ttp = pos.tp_on_sq(to);
+    let mt = mv.move_type();
+
+    // Castling
+    if mt == CASTLE {
+        return if to > from {
+            "O-O".to_string()
+        } else {
+            "O-O-O".to_string()
+        };
+    }
+
+    let is_capture = ttp != NO_TP || mt == EP_CAP;
+
+    // Promotion suffix
+    let prom_suffix = if mv.is_prom() {
+        let ch = match mt {
+            N_PROM => 'N',
+            B_PROM => 'B',
+            R_PROM => 'R',
+            Q_PROM => 'Q',
+            _ => '?',
+        };
+        format!("={ch}")
+    } else {
+        String::new()
+    };
+
+    let to_str = format!(
+        "{}{}",
+        (b'a' + file_of(to) as u8) as char,
+        (b'1' + rank_of(to) as u8) as char,
+    );
+
+    // Pawn moves
+    if ftp == P {
+        if is_capture {
+            // Pawn captures always carry the from-file: `exd5`, `exd8=Q`.
+            let from_file = (b'a' + file_of(from) as u8) as char;
+            return format!("{from_file}x{to_str}{prom_suffix}");
+        }
+        return format!("{to_str}{prom_suffix}");
+    }
+
+    // Piece moves — pick a letter and figure out disambiguation.
+    let piece_letter = match ftp {
+        N => 'N',
+        B => 'B',
+        R => 'R',
+        Q => 'Q',
+        K => 'K',
+        _ => '?',
+    };
+
+    // Find other legal moves of the same piece type that also land on `to`.
+    // Track the from-files and from-ranks of those movers (excluding `mv`'s own from).
+    let mut other_from_files: Vec<i32> = Vec::new();
+    let mut other_from_ranks: Vec<i32> = Vec::new();
+    let mut any_other = false;
+    for &cand in legal {
+        if cand == mv {
+            continue;
+        }
+        if cand.to_sq() != to {
+            continue;
+        }
+        if pos.tp_on_sq(cand.from_sq()) != ftp {
+            continue;
+        }
+        any_other = true;
+        other_from_files.push(file_of(cand.from_sq()));
+        other_from_ranks.push(rank_of(cand.from_sq()));
+    }
+
+    let disambig = if !any_other {
+        String::new()
+    } else {
+        let from_file = file_of(from);
+        let from_rank = rank_of(from);
+        let file_unique = !other_from_files.contains(&from_file);
+        let rank_unique = !other_from_ranks.contains(&from_rank);
+        if file_unique {
+            ((b'a' + from_file as u8) as char).to_string()
+        } else if rank_unique {
+            ((b'1' + from_rank as u8) as char).to_string()
+        } else {
+            // Both file and rank ambiguous — emit full square.
+            format!(
+                "{}{}",
+                (b'a' + from_file as u8) as char,
+                (b'1' + from_rank as u8) as char,
+            )
+        }
+    };
+
+    let cap = if is_capture { "x" } else { "" };
+    format!("{piece_letter}{disambig}{cap}{to_str}")
+}
+
+/// Convert a SAN string (annotation-tolerant) to an internal `Move` by
+/// generating the legal-move list and matching its rendered SAN.
+///
+/// Returns `None` if no legal move matches.
+pub fn san_to_move(pos: &mut Position, san: &str) -> Option<Move> {
+    let target = strip_san_annotations(san);
+    let legal = legal_moves(pos);
+    legal
+        .iter()
+        .copied()
+        .find(|&mv| move_to_san(pos, mv, &legal) == target)
+}
+
+// ============================================================================
+// CLI argument parsing
+// ============================================================================
+
+struct SuiteArgs {
+    path: String,
+    time_ms: u64,
+    hash_mb: usize,
+    verbose: bool,
+    csv: Option<String>,
+}
+
+fn parse_args(args: &[String]) -> Result<SuiteArgs, String> {
+    let mut path: Option<String> = None;
+    let mut time_ms: u64 = 500;
+    let mut hash_mb: usize = 16;
+    let mut verbose = false;
+    let mut csv: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--suite" => {
+                i += 1;
+                path = Some(args.get(i).cloned().ok_or("--suite requires a path")?);
+            }
+            "--time" => {
+                i += 1;
+                time_ms = args
+                    .get(i)
+                    .and_then(|t| t.parse().ok())
+                    .ok_or("--time requires a number of milliseconds")?;
+            }
+            "--hash" => {
+                i += 1;
+                hash_mb = args
+                    .get(i)
+                    .and_then(|t| t.parse().ok())
+                    .ok_or("--hash requires a size in MB")?;
+            }
+            "--verbose" => verbose = true,
+            "--csv" => {
+                i += 1;
+                csv = Some(args.get(i).cloned().ok_or("--csv requires a path")?);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    Ok(SuiteArgs {
+        path: path.ok_or("missing --suite <path>")?,
+        time_ms,
+        hash_mb,
+        verbose,
+        csv,
+    })
+}
+
+// ============================================================================
+// Runner
+// ============================================================================
+
+/// Per-position result.
+struct PosResult {
+    id: String,
+    bm: String,
+    engine_uci: String,
+    engine_san: String,
+    depth_reached: i32,
+    time_ms: u64,
+    nodes: u64,
+    passed: bool,
+}
+
+/// Run the EPD suite. Entry point invoked by `--suite ...` from `main`.
+pub fn run_suite(args: &[String]) {
+    let parsed = match parse_args(args) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: {e}");
+            eprintln!(
+                "usage: tales --suite <path> [--time <ms>] [--hash <mb>] [--verbose] [--csv <path>]"
+            );
+            return;
+        }
+    };
+
+    // Read file
+    let content = match std::fs::read_to_string(&parsed.path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read '{}': {e}", parsed.path);
+            return;
+        }
+    };
+
+    let records: Vec<EpdRecord> = content.lines().filter_map(parse_epd_line).collect();
+    if records.is_empty() {
+        eprintln!("error: no EPD records parsed from '{}'", parsed.path);
+        return;
+    }
+
+    println!(
+        "[suite] file = {}, positions = {}, time/pos = {} ms, hash = {} MB",
+        parsed.path,
+        records.len(),
+        parsed.time_ms,
+        parsed.hash_mb,
+    );
+    println!("[suite] internal book = OFF, external book = OFF");
+    println!();
+
+    // Set up search resources (single-threaded; aspiration via iterate()).
+    let mut par = eval::params::EvalParams::new();
+    eval::global_pst::init(&par);
+    let mut tt = TransTable::new(parsed.hash_mb);
+    let mut eval_hash = eval::new_eval_hash();
+    let mut pawn_tt = eval::pawn_hash::PawnHash::new();
+    let mut searcher = search::ordering::Searcher::new();
+    let mut pos = Position::new();
+
+    let mut results: Vec<PosResult> = Vec::with_capacity(records.len());
+    let suite_start = Instant::now();
+
+    for (idx, rec) in records.iter().enumerate() {
+        // Fresh state per position so TT/history/killers don't leak.
+        pos.set_position(&rec.fen);
+        tt.clear();
+        searcher.clear_all();
+        searcher.nodes = 0;
+        searcher.dp_completed = 0;
+        searcher.pv_eng = [Move::NONE; 2];
+        searcher.abort_search = false;
+        searcher.is_pondering = false;
+        searcher.ponder_enabled = false;
+        searcher.silent = true;
+        searcher.time_limit_ms = parsed.time_ms;
+        searcher.move_overhead_ms = 0;
+        searcher.nodes_limit = 0;
+        searcher.nps_limit = 0;
+        searcher.multi_pv = 1;
+        par.init_asymmetric(pos.side);
+
+        // Resolve the bm SAN against this position so we know the target Move.
+        let target_mv = san_to_move(&mut pos, &rec.bm);
+
+        let t0 = Instant::now();
+        {
+            let lmr = search::alphabeta::lmr_table();
+            let mut ctx = search::ordering::SearchCtx {
+                searcher: &mut searcher,
+                tt: &mut tt,
+                par: &par,
+                eval_hash: &mut eval_hash,
+                pawn_tt: &mut pawn_tt,
+                lmr,
+            };
+            search::alphabeta::iterate(&mut ctx, &mut pos, MAX_PLY as i32);
+        }
+        let elapsed_ms = t0.elapsed().as_millis() as u64;
+
+        let engine_mv = searcher.pv_eng[0];
+        let engine_uci = if engine_mv.is_none() {
+            "0000".to_string()
+        } else {
+            engine_mv.to_uci_string()
+        };
+        let legal = legal_moves(&mut pos);
+        let engine_san = if engine_mv.is_none() {
+            String::new()
+        } else {
+            move_to_san(&mut pos, engine_mv, &legal)
+        };
+        let passed = match target_mv {
+            Some(t) => t == engine_mv,
+            None => false,
+        };
+
+        let result = PosResult {
+            id: rec.id.clone(),
+            bm: rec.bm.clone(),
+            engine_uci,
+            engine_san,
+            depth_reached: searcher.dp_completed,
+            time_ms: elapsed_ms,
+            nodes: searcher.nodes,
+            passed,
+        };
+
+        // Per-position log line.
+        let tag = if result.passed { "PASS" } else { "FAIL" };
+        if parsed.verbose || !result.passed {
+            println!(
+                "[{tag} d={d:>2} {t:>4}ms n={n:>9}] {idx:>3}/{total} {id} bm={bm} got={got}",
+                tag = tag,
+                d = result.depth_reached,
+                t = result.time_ms,
+                n = result.nodes,
+                idx = idx + 1,
+                total = records.len(),
+                id = if result.id.is_empty() {
+                    "-"
+                } else {
+                    &result.id
+                },
+                bm = result.bm,
+                got = if result.engine_san.is_empty() {
+                    &result.engine_uci
+                } else {
+                    &result.engine_san
+                },
+            );
+        } else {
+            println!(
+                "[{tag} d={d:>2} {t:>4}ms] {idx:>3}/{total} {bm}",
+                tag = tag,
+                d = result.depth_reached,
+                t = result.time_ms,
+                idx = idx + 1,
+                total = records.len(),
+                bm = result.bm,
+            );
+        }
+
+        results.push(result);
+    }
+
+    let suite_ms = suite_start.elapsed().as_millis() as u64;
+
+    // Aggregate summary
+    let total = results.len();
+    let pass = results.iter().filter(|r| r.passed).count();
+    let total_nodes: u64 = results.iter().map(|r| r.nodes).sum();
+    let mut depths: Vec<i32> = results.iter().map(|r| r.depth_reached).collect();
+    depths.sort_unstable();
+    let median_depth = if depths.is_empty() {
+        0
+    } else {
+        depths[depths.len() / 2]
+    };
+    let nps = (total_nodes * 1000)
+        .checked_div(suite_ms)
+        .unwrap_or(0);
+
+    println!();
+    println!("=== Suite summary ===");
+    println!(
+        "  passed:        {pass} / {total}  ({pct:.1}%)",
+        pct = 100.0 * pass as f64 / total as f64
+    );
+    println!("  median depth:  {median_depth}");
+    println!("  total nodes:   {total_nodes}");
+    println!("  total time:    {suite_ms} ms");
+    println!("  effective nps: {nps}");
+
+    // CSV output (optional)
+    if let Some(csv_path) = parsed.csv {
+        let mut out = String::new();
+        out.push_str("idx,id,bm,got_san,got_uci,depth,nodes,time_ms,passed\n");
+        for (i, r) in results.iter().enumerate() {
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{}\n",
+                i + 1,
+                csv_escape(&r.id),
+                csv_escape(&r.bm),
+                csv_escape(&r.engine_san),
+                csv_escape(&r.engine_uci),
+                r.depth_reached,
+                r.nodes,
+                r.time_ms,
+                if r.passed { 1 } else { 0 },
+            ));
+        }
+        if let Err(e) = std::fs::write(&csv_path, out) {
+            eprintln!("error: could not write csv '{csv_path}': {e}");
+        } else {
+            println!("  csv written:   {csv_path}");
+        }
+    }
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') {
+        let q = s.replace('"', "\"\"");
+        format!("\"{q}\"")
+    } else {
+        s.to_string()
+    }
+}

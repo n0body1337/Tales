@@ -25,6 +25,7 @@
 //! - `bench`     — bench command (standard positions)
 
 mod bench;
+pub mod epd;
 mod go;
 mod options;
 mod time_mgmt;

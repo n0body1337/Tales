@@ -445,6 +445,7 @@ pub struct Searcher {
     pub is_pondering: bool,      // true when searching in ponder mode
     pub ponder_time_ms: u64,     // real time limit to apply on ponderhit
     pub ponder_enabled: bool,    // UCI Ponder option — controls bestmove ponder output
+    pub silent: bool,            // suppress per-iteration UCI info output (suite/test runner)
 }
 
 impl Searcher {
@@ -472,6 +473,7 @@ impl Searcher {
             is_pondering: false,
             ponder_time_ms: 0,
             ponder_enabled: false,
+            silent: false,
         }
     }
 

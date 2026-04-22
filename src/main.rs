@@ -36,6 +36,10 @@ fn main() {
         run_tests();
     } else if args.len() > 1 && args[1] == "--bench" {
         run_bench();
+    } else if args.len() > 1 && args[1] == "--suite" {
+        // EPD test-suite runner. Bypasses UCI/parse_go entirely so the
+        // opening book is never probed during measurement.
+        uci::epd::run_suite(&args[1..]);
     } else {
         // UCI mode
         uci::uci_loop();

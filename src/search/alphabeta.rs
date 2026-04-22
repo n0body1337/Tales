@@ -244,7 +244,7 @@ pub fn search_root(
         }
 
         // currmove output
-        if ply == 0 && depth > 16 {
+        if ply == 0 && depth > 16 && !ctx.searcher.silent {
             println!(
                 "info currmove {} currmovenumber {}",
                 mv.to_uci_string(),
@@ -1227,6 +1227,9 @@ pub fn multi_pv(ctx: &mut SearchCtx, pos: &mut Position, max_depth: i32, num_pvs
 // ============================================================================
 
 fn display_pv(ctx: &SearchCtx, depth: i32, score: i32, pv: &[Move]) {
+    if ctx.searcher.silent {
+        return;
+    }
     if ctx.searcher.multi_pv > 1 {
         return;
     } // MultiPV prints its own info lines
