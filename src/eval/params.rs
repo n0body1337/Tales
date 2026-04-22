@@ -494,7 +494,7 @@ impl EvalParams {
             keep_pc: [8, 10, 10, 0, 20, 0, 0],
 
             // Search and strength-limiting
-            draw_score: 5,     // contempt: slight draw avoidance (Tal style)
+            draw_score: 15,    // contempt: avoid draws (M7: 5 → 15 — Tal refused to draw)
             eval_blur: 0,      // evaluation noise for strength limiting
             hist_perc: 175,    // LMR aggressiveness (history percentage)
             hist_limit: 24576, // LMR history threshold
