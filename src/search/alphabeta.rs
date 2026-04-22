@@ -91,6 +91,32 @@ pub struct SearchFrame {
     pub last_move: Move,
     /// Square of the last capture (for recapture extensions).
     pub last_capt_sq: i32,
+    /// Did the side that just played make a sacrificial move?
+    /// Drives the M4 sacrificial follow-up extension and the M6 qsearch
+    /// one-extra-ply-of-checks routing.
+    #[allow(dead_code)] // wired in M6 (qsearch routes sac follow-ups through quiesce_checks).
+    pub parent_was_sacrificial: bool,
+    /// Number of sacrificial follow-up extensions accumulated on this branch.
+    /// Capped at `root_depth / 2` to keep long sac chains from exploding the
+    /// search tree; the existing extensions (check/recapture/pawn-7th/
+    /// singular) are not counted against this budget.
+    pub ply_extensions: i32,
+}
+
+impl SearchFrame {
+    /// Construct a frame that reflects "no previous move" — used at the root
+    /// and by sub-searches (IID, NMP, singular-extension probes) that aren't
+    /// part of the main move chain.
+    #[inline]
+    pub fn neutral() -> Self {
+        SearchFrame {
+            was_null: false,
+            last_move: Move::NONE,
+            last_capt_sq: -1,
+            parent_was_sacrificial: false,
+            ply_extensions: 0,
+        }
+    }
 }
 
 // ============================================================================
@@ -186,11 +212,7 @@ pub fn search_root(
 
     // INTERNAL ITERATIVE DEEPENING
     if is_pv && !in_check && tt_move.is_none() && depth > 6 {
-        let frame = SearchFrame {
-            was_null: false,
-            last_move: Move::NONE,
-            last_capt_sq: -1,
-        };
+        let frame = SearchFrame::neutral();
         search(ctx, pos, ply, alpha, beta, depth - 2, &frame, &mut new_pv);
         tt_move = ctx.tt.retrieve_move(pos.hash_key);
     }
@@ -222,6 +244,10 @@ pub fn search_root(
         } else {
             -1
         };
+        // Pre-make-move sacrifice classification, propagated to the child
+        // frame so the child node can use the M4 follow-up extension and
+        // the M6 qsearch routing.
+        let was_sac = is_sacrificial(pos, mv);
 
         let mut u = Undo::new();
         pos.do_move(mv, &mut u);
@@ -282,11 +308,7 @@ pub fn search_root(
         if is_pv && depth > 5 && mv == sing_move && can_sing && !fl_extended {
             let new_alpha_s = -sing_score - 50;
             let mut mock_pv = [Move::NONE; 1];
-            let frame = SearchFrame {
-                was_null: false,
-                last_move: Move::NONE,
-                last_capt_sq: -1,
-            };
+            let frame = SearchFrame::neutral();
             let sc = search(
                 ctx,
                 pos,
@@ -335,10 +357,15 @@ pub fn search_root(
         // PVS
         let mut score;
         loop {
+            // Root has no incoming frame; the child starts with a fresh
+            // sac-extension budget. `was_sac` is propagated so the child
+            // knows its parent sacrificed.
             let frame = SearchFrame {
                 was_null: false,
                 last_move: mv,
                 last_capt_sq: last_capt,
+                parent_was_sacrificial: was_sac,
+                ply_extensions: 0,
             };
             if best == -INF {
                 score = -search(
@@ -628,6 +655,8 @@ pub fn search(
                 was_null: true,
                 last_move: Move::NONE,
                 last_capt_sq: -1,
+                parent_was_sacrificial: false,
+                ply_extensions: frame.ply_extensions,
             };
             let score = if new_depth <= 0 {
                 -quiesce::quiesce_checks(ctx, pos, ply + 1, -beta, -beta + 1, &mut new_pv)
@@ -668,6 +697,8 @@ pub fn search(
                         was_null: true,
                         last_move,
                         last_capt_sq,
+                        parent_was_sacrificial: false,
+                        ply_extensions: frame.ply_extensions,
                     };
                     let v_score = search(ctx, pos, ply, alpha, beta, new_depth - 5, &frame, pv);
                     if ctx.searcher.abort_search && ctx.searcher.root_depth > 1 {
@@ -705,6 +736,8 @@ pub fn search(
             was_null: false,
             last_move: Move::NONE,
             last_capt_sq,
+            parent_was_sacrificial: false,
+            ply_extensions: 0,
         };
         search(ctx, pos, ply, alpha, beta, depth - 2, &frame, &mut new_pv);
         tt_move = ctx.tt.retrieve_move(pos.hash_key);
@@ -753,6 +786,11 @@ pub fn search(
         } else {
             -1
         };
+        // Sacrificial-style classification (pre-make-move) — drives the
+        // M4 follow-up extension below and is propagated to the child
+        // frame so M6's qsearch can route a sac follow-up through
+        // quiesce_checks.
+        let was_sac = is_sacrificial(pos, mv);
 
         let mut u = Undo::new();
         pos.do_move(mv, &mut u);
@@ -763,6 +801,7 @@ pub fn search(
 
         // GATHER INFO
         let mut fl_extended = false;
+        let mut sac_ext_used = false;
         mv_tried += 1;
         if ply == 0 && mv_tried > 1 {
             ctx.searcher.has_root_choice = true;
@@ -800,15 +839,32 @@ pub fn search(
             }
         }
 
+        // 5. sacrificial follow-up extension (M4) — catches the narrow
+        // case of a sacrificial recapture in PV that the (PV-only)
+        // recapture extension doesn't already pick up, and any
+        // check-plus-sacrifice pairs the existing check extension missed.
+        // The vast majority of sac+check moves are already extended by
+        // the check extension above; this is infrastructure that will be
+        // exercised more heavily by M5's pruning-relaxation gates. Capped
+        // per branch via SearchFrame::ply_extensions so long sac chains
+        // can't explode the tree.
+        let sac_ext_cap = (ctx.searcher.root_depth + 1) / 4;
+        if !fl_extended
+            && was_sac
+            && is_pv
+            && (child_in_check || mv.to_sq() == last_capt_sq)
+            && frame.ply_extensions < sac_ext_cap
+        {
+            new_depth += 1;
+            fl_extended = true;
+            sac_ext_used = true;
+        }
+
         // 4. singular extension, Senpai-style
         if is_pv && depth > 5 && mv == sing_move && can_sing && !fl_extended {
             let new_alpha_s = -sing_score - 50;
             let mut mock_pv = [Move::NONE; 1];
-            let frame = SearchFrame {
-                was_null: false,
-                last_move: Move::NONE,
-                last_capt_sq: -1,
-            };
+            let frame = SearchFrame::neutral();
             let sc = search(
                 ctx,
                 pos,
@@ -913,10 +969,17 @@ pub fn search(
         // PVS
         let mut score;
         loop {
+            // Propagate `was_sac` so the child can see if its parent
+            // sacrificed (M6 routes a sac follow-up through quiesce_checks).
+            // Increment ply_extensions only when M4's sac extension fired
+            // on this move; the existing extensions don't count toward the
+            // cap.
             let frame = SearchFrame {
                 was_null: false,
                 last_move: mv,
                 last_capt_sq: last_capt,
+                parent_was_sacrificial: was_sac,
+                ply_extensions: frame.ply_extensions + sac_ext_used as i32,
             };
             if best == -INF {
                 score = -search(
