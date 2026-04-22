@@ -322,18 +322,18 @@ impl EvalParams {
             // ATT2 = attack on squares defended by enemy pawns
             // CHK  = threatening check to enemy king
             // CONTACT = contact check threats (piece adjacent to king)
-            n_att1: 6,
-            n_att2: 3,
-            b_att1: 6,
-            b_att2: 2,
-            r_att1: 9,
-            r_att2: 4,
-            q_att1: 16,
-            q_att2: 5,
-            n_chk: 4,
-            b_chk: 6,
-            r_chk: 11,
-            q_chk: 12,
+            n_att1: 9,    // Tal: 6 → 9 (1.5x — bumps weight of attackers in king zone)
+            n_att2: 4,    // Tal: 3 → 4
+            b_att1: 9,    // Tal: 6 → 9
+            b_att2: 3,    // Tal: 2 → 3
+            r_att1: 13,   // Tal: 9 → 13
+            r_att2: 6,    // Tal: 4 → 6
+            q_att1: 22,   // Tal: 16 → 22
+            q_att2: 7,    // Tal: 5 → 7
+            n_chk: 6,     // Tal: 4 → 6 (knight check threats more dangerous)
+            b_chk: 8,     // Tal: 6 → 8
+            r_chk: 15,    // Tal: 11 → 15
+            q_chk: 16,    // Tal: 12 → 16
             r_contact: 24,
             q_contact: 36,
 
@@ -452,8 +452,8 @@ impl EvalParams {
             w_material: 48, // material counting weight
             w_pst: 100,     // piece-square table weight
 
-            w_threats: 190,  // piece pressure / hanging piece threats
-            w_tropism: 80,   // king tropism (piece proximity to enemy king)
+            w_threats: 230,  // piece pressure / hanging piece threats (Tal: 190 → 230)
+            w_tropism: 100,  // king tropism (Tal: 80 → 100)
             w_fwd: 0,        // forwardness bonus
             w_passers: 127,  // passed pawn evaluation
             w_mass: 100,     // pawn mass (phalanx + defended pawns)
@@ -494,7 +494,7 @@ impl EvalParams {
             keep_pc: [8, 10, 10, 0, 20, 0, 0],
 
             // Search and strength-limiting
-            draw_score: 15,    // contempt: avoid draws (M7: 5 → 15 — Tal refused to draw)
+            draw_score: 25,    // contempt: aggressively avoid draws (Tal style)
             eval_blur: 0,      // evaluation noise for strength limiting
             hist_perc: 175,    // LMR aggressiveness (history percentage)
             hist_limit: 24576, // LMR history threshold
