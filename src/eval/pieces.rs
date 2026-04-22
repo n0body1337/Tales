@@ -90,10 +90,9 @@ pub fn evaluate_pieces(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Col
     let mut outpost = 0i32;
     let mut center_control = 2 * (e.p_takes[si] & masks::CENTER).popcount();
 
-    // King attack zone
+    // King attack zone (shared with the sacrifice classifier in search::ordering).
     let king_sq = p.king_sq(op);
-    let mut bb_zone = attacks::king_attacks(king_sq);
-    bb_zone = bb_zone | shift_fwd(bb_zone, op);
+    let bb_zone = attacks::king_attack_zone(king_sq, op);
 
     // Check threat bitboards
     let occ = p.occ_bb();

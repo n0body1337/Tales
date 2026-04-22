@@ -18,6 +18,8 @@
 
 //! Move ordering — staged move picker with history, killer, and refutation heuristics.
 
+use crate::board::attacks;
+use crate::board::bitboard::Bitboard;
 use crate::board::moves::*;
 use crate::board::position::Position;
 use crate::board::types::*;
@@ -416,6 +418,158 @@ pub fn bad_capture(pos: &Position, mv: Move) -> bool {
     }
 
     see::see(pos, fsq, tsq) < 0
+}
+
+// ============================================================================
+// Sacrifice classifier
+// ============================================================================
+//
+// Tales is a Tal-style engine: it deliberately wants to find sacrificial
+// moves the rest of the search would prune away. The classifier below is
+// the shared predicate used by:
+//   - move ordering (promote sacs out of the bad-capture pool)
+//   - search extensions (extend follow-ups after a sacrificial parent)
+//   - pruning relaxation (skip futility/LMP and reduce LMR for sacs)
+//
+// A move is "sacrificial-looking" when:
+//   1) it loses material by SEE (worse than -SAC_THRESHOLD), and
+//   2) it either delivers check, or its destination square belongs to the
+//      enemy king's attack zone.
+//
+// The conjunction filters out random pawn pushes that happen to be SEE<0
+// (e.g. losing a tempo on the queenside). Pure quiet file/diagonal openers
+// like Rd5 that are SEE>=0 are NOT classified — those are caught by eval
+// (king tropism, line opening) rather than by the search bias.
+
+/// SEE threshold below which a move is considered to "lose material".
+/// 90 cp ≈ slightly less than a minor piece, so capturing a defended pawn
+/// with a piece (SEE ≈ −225) qualifies, while a routine SEE = −10 wood
+/// shuffle does not.
+#[allow(dead_code)] // wired into search hot paths in milestones M3-M5.
+pub const SAC_THRESHOLD: i32 = 90;
+
+/// Cheap pre-move "does this move deliver direct check?" test.
+#[allow(dead_code)] // called by is_sacrificial; wired into search in M3-M5.
+///
+/// Considers only direct checks from the destination square (the dominant
+/// case for Bxh7+ / Nxf7+ / Rxg7+ / Qh5+ family of sacrifices). Discovered
+/// checks are intentionally not considered — they are rare in the EPD test
+/// suite and adding them would bloat the hot path that runs in capture
+/// scoring.
+#[inline]
+fn gives_direct_check(pos: &Position, mv: Move) -> bool {
+    let from = mv.from_sq();
+    let to = mv.to_sq();
+    let mover = pos.tp_on_sq(from);
+    if mover == NO_TP {
+        return false;
+    }
+
+    let enemy = !pos.side;
+    let king_sq = pos.king_sq(enemy);
+
+    // Approximate post-move occupancy: the from-square clears and the
+    // to-square is set. This is sufficient for direct-check detection of
+    // the moving piece (we don't worry about ep capture removing a third
+    // pawn here — that's a discovered-check case we accept missing).
+    let occ_after = (pos.occ_bb() ^ Bitboard::from_sq(from)) | Bitboard::from_sq(to);
+
+    // The piece that lands on `to` after the move (account for promotions).
+    let landing = if mv.is_prom() {
+        mv.prom_type()
+    } else {
+        mover
+    };
+
+    let attack_bb = match landing {
+        PieceType::Pawn => attacks::pawn_attacks(pos.side, to),
+        PieceType::Knight => attacks::knight_attacks(to),
+        PieceType::Bishop => attacks::bishop_attacks(occ_after, to),
+        PieceType::Rook => attacks::rook_attacks(occ_after, to),
+        PieceType::Queen => attacks::queen_attacks(occ_after, to),
+        PieceType::King => attacks::king_attacks(to),
+        PieceType::None => return false,
+    };
+    attack_bb.contains(king_sq)
+}
+
+/// Sacrifice classifier — see module-level comment.
+#[allow(dead_code)] // wired into ordering, extensions, and pruning in M3-M5.
+///
+/// Pre-make-move predicate. Costs roughly one SEE call (~30 ns) plus one
+/// magic-bitboard ray check. Skip-list:
+/// - Castling: never classified as a sacrifice.
+/// - En-passant: rarely sacrificial in practice; SEE handles it correctly
+///   when reached but we don't fast-path it.
+#[inline]
+pub fn is_sacrificial(pos: &Position, mv: Move) -> bool {
+    if mv.is_none() || mv.move_type() == CASTLE {
+        return false;
+    }
+
+    let fsq = mv.from_sq();
+    let tsq = mv.to_sq();
+
+    // Material loss check (SEE-based). A move that wins or breaks even on
+    // material is, by construction, not a sacrifice.
+    if see::see(pos, fsq, tsq) >= -SAC_THRESHOLD {
+        return false;
+    }
+
+    // Either the move gives check, or it lands in the enemy king's zone.
+    if gives_direct_check(pos, mv) {
+        return true;
+    }
+    let enemy = !pos.side;
+    let king_sq = pos.king_sq(enemy);
+    attacks::king_attack_zone(king_sq, enemy).contains(tsq)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::position::Position;
+
+    fn setup() -> Position {
+        // Initialize attack tables and PST tables once.
+        crate::board::init();
+        let par = eval::params::EvalParams::new();
+        eval::global_pst::init(&par);
+        Position::new()
+    }
+
+    #[test]
+    fn classic_bxh7_sac_classifies() {
+        let mut pos = setup();
+        // Standard "Greek gift" position — Bxh7+ wins king for nothing,
+        // but SEE is negative because the bishop is uncovered.
+        pos.set_position("rnbqk2r/ppp2ppp/3p1n2/4p3/1bB1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq -");
+        let mv = pos.str_to_move("c4f7");
+        assert!(pos.legal(mv));
+        // Bxf7+ is the canonical Italian-game sac; it gives check and SEE is
+        // negative (bishop for pawn). Should classify true.
+        assert!(is_sacrificial(&pos, mv), "Bxf7+ should be classified as sacrificial");
+    }
+
+    #[test]
+    fn quiet_centralizing_knight_does_not_classify() {
+        let mut pos = setup();
+        pos.set_position("rnbqkbnr/pppppppp/8/8/8/2N5/PPPPPPPP/R1BQKBNR w KQkq -");
+        // Nd5 — centralizing, SEE=0, not in king zone — should not classify.
+        let mv = pos.str_to_move("c3d5");
+        assert!(pos.legal(mv));
+        assert!(!is_sacrificial(&pos, mv));
+    }
+
+    #[test]
+    fn equal_capture_does_not_classify() {
+        let mut pos = setup();
+        pos.set_position("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -");
+        // Nxe5 — wins a pawn cleanly; not sacrificial.
+        let mv = pos.str_to_move("f3e5");
+        assert!(pos.legal(mv));
+        assert!(!is_sacrificial(&pos, mv));
+    }
 }
 
 // ============================================================================
