@@ -361,7 +361,23 @@ fn score_captures(pos: &Position, list: &mut MoveList) {
     for i in 0..list.count {
         // SAFETY: i is bounded by list.count which is always <= MAX_MOVES
         let entry = unsafe { list.moves.get_unchecked_mut(i) };
-        entry.score = mvv_lva(pos, entry.mv);
+        let mv = entry.mv;
+        let mut sc = mvv_lva(pos, mv);
+        // Sacrificial-capture promotion: SEE-losing captures that target
+        // the enemy king zone or deliver check get bumped above the rest of
+        // the bad captures so they sort with the good ones rather than
+        // being deferred. Only spend the SEE call when the move could
+        // possibly need it (cheap MVV-LVA filter first).
+        let from = mv.from_sq();
+        let to = mv.to_sq();
+        if mv.move_type() != EP_CAP
+            && TP_VALUE[pos.tp_on_sq(to).index()] < TP_VALUE[pos.tp_on_sq(from).index()]
+            && see::see(pos, from, to) < -SAC_THRESHOLD
+            && targets_king_or_checks(pos, mv)
+        {
+            sc += SAC_BONUS;
+        }
+        entry.score = sc;
     }
 }
 
@@ -378,6 +394,14 @@ fn score_quiet(pos: &Position, list: &mut MoveList, history: &[[i32; 64]; 13], r
         let mut sc = unsafe { *history.get_unchecked(pc_idx).get_unchecked(tsq as usize) };
         if fsq == ref_sq {
             sc += 2048;
+        }
+        // Sacrificial-quiet bonus — promotes a quiet move that loses
+        // material by SEE but threatens the enemy king (e.g. a quiet
+        // queen lift to the attack zone). `is_sacrificial` fast-fails
+        // on the common case (move doesn't attack the king), so SEE
+        // is only paid for moves that actually target the king.
+        if is_sacrificial(pos, mv) {
+            sc += SAC_QUIET_BONUS;
         }
         entry.score = sc;
     }
@@ -401,7 +425,12 @@ pub fn mvv_lva(pos: &Position, mv: Move) -> i32 {
     5
 }
 
-/// BadCapture — is this capture likely losing material?
+/// BadCapture — should this capture be deferred to the bad-capture pool?
+///
+/// Since M3, sacrificial-style captures (SEE < -SAC_THRESHOLD that target
+/// the enemy king zone or deliver check) are NOT considered bad — they
+/// flow through the main capture phase with a SAC_BONUS already applied
+/// in `score_captures`, so the search actually tries them at this depth.
 #[inline]
 pub fn bad_capture(pos: &Position, mv: Move) -> bool {
     let fsq = mv.from_sq();
@@ -417,7 +446,15 @@ pub fn bad_capture(pos: &Position, mv: Move) -> bool {
         return false;
     }
 
-    see::see(pos, fsq, tsq) < 0
+    let see_val = see::see(pos, fsq, tsq);
+    if see_val >= 0 {
+        return false;
+    }
+    // Sacrificial-style losing captures stay in the main pool.
+    if see_val < -SAC_THRESHOLD && targets_king_or_checks(pos, mv) {
+        return false;
+    }
+    true
 }
 
 // ============================================================================
@@ -445,11 +482,21 @@ pub fn bad_capture(pos: &Position, mv: Move) -> bool {
 /// 90 cp ≈ slightly less than a minor piece, so capturing a defended pawn
 /// with a piece (SEE ≈ −225) qualifies, while a routine SEE = −10 wood
 /// shuffle does not.
-#[allow(dead_code)] // wired into search hot paths in milestones M3-M5.
 pub const SAC_THRESHOLD: i32 = 90;
 
+/// Score bonus applied to sacrificial captures in `score_captures` so they
+/// sort right after good captures and ahead of all quiet moves. Bigger than
+/// any MVV-LVA delta (~35) but smaller than a clean +200 SEE winning
+/// capture, so a winning trade still wins the slot.
+pub const SAC_BONUS: i32 = 400;
+
+/// Score bonus applied to sacrificial quiet moves in `score_quiet`. Sits
+/// below the 2048 refutation bonus and above typical history scores so that
+/// a sac quiet outranks ordinary quiets but does not displace a refutation
+/// continuation already known to refute the previous move.
+pub const SAC_QUIET_BONUS: i32 = 1500;
+
 /// Cheap pre-move "does this move deliver direct check?" test.
-#[allow(dead_code)] // called by is_sacrificial; wired into search in M3-M5.
 ///
 /// Considers only direct checks from the destination square (the dominant
 /// case for Bxh7+ / Nxf7+ / Rxg7+ / Qh5+ family of sacrifices). Discovered
@@ -493,8 +540,20 @@ fn gives_direct_check(pos: &Position, mv: Move) -> bool {
     attack_bb.contains(king_sq)
 }
 
+/// "Does this move target the enemy king?" — the (check OR king-zone) leg of
+/// the sacrifice classifier, factored out so `bad_capture` and
+/// `score_captures` can reuse the cheap predicate without paying a second
+/// SEE call once they already know the move loses material.
+#[inline]
+fn targets_king_or_checks(pos: &Position, mv: Move) -> bool {
+    if gives_direct_check(pos, mv) {
+        return true;
+    }
+    let enemy = !pos.side;
+    attacks::king_attack_zone(pos.king_sq(enemy), enemy).contains(mv.to_sq())
+}
+
 /// Sacrifice classifier — see module-level comment.
-#[allow(dead_code)] // wired into ordering, extensions, and pruning in M3-M5.
 ///
 /// Pre-make-move predicate. Costs roughly one SEE call (~30 ns) plus one
 /// magic-bitboard ray check. Skip-list:
@@ -507,22 +566,17 @@ pub fn is_sacrificial(pos: &Position, mv: Move) -> bool {
         return false;
     }
 
-    let fsq = mv.from_sq();
-    let tsq = mv.to_sq();
-
-    // Material loss check (SEE-based). A move that wins or breaks even on
-    // material is, by construction, not a sacrifice.
-    if see::see(pos, fsq, tsq) >= -SAC_THRESHOLD {
+    // Fast fail: if the move doesn't plausibly attack the enemy king
+    // (neither lands in the king zone nor delivers a direct check),
+    // it is not a sacrifice. This fast-path keeps the SEE call off the
+    // common case in score_quiet where most moves don't target the king.
+    if !targets_king_or_checks(pos, mv) {
         return false;
     }
 
-    // Either the move gives check, or it lands in the enemy king's zone.
-    if gives_direct_check(pos, mv) {
-        return true;
-    }
-    let enemy = !pos.side;
-    let king_sq = pos.king_sq(enemy);
-    attacks::king_attack_zone(king_sq, enemy).contains(tsq)
+    // Material loss check (SEE-based). A move that wins or breaks even
+    // on material isn't a sacrifice even if it attacks the king.
+    see::see(pos, mv.from_sq(), mv.to_sq()) < -SAC_THRESHOLD
 }
 
 #[cfg(test)]
