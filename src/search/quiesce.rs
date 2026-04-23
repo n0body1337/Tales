@@ -201,8 +201,9 @@ pub fn quiesce_flee(
     );
 
     loop {
-        // `quiesce_flee` doesn't apply the M5 pruning/extension gates, so
-        // both the MoveKind flag and the sac-cached bit are discarded here.
+        // Check evasions don't apply futility / LMP / sac-extension, so
+        // both the MoveKind flag and the cached sacrifice bit are
+        // unused here.
         let (mv, _flag, _was_sac) = picker.next_move(pos, &ctx.searcher.history);
         if mv.is_none() {
             break;

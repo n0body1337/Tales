@@ -178,14 +178,13 @@ pub fn is_attacked(
     false
 }
 
-/// King attack zone — the squares from which an enemy piece is considered to
-/// be attacking the king for evaluation and sac-classification purposes.
+/// Squares from which an enemy piece is considered to be "attacking the
+/// king" — the king's immediate ring (the 8 surrounding squares) plus the
+/// row immediately in front of the ring (relative to `king_color`).
 ///
-/// Defined as the king's immediate ring (8 surrounding squares) extended by
-/// one row in the king's forward direction. This is the same shape the eval
-/// uses in `evaluate_pieces` to count attackers against the enemy king, and
-/// the same shape the sacrifice classifier uses to decide whether a move's
-/// destination square belongs to the attack zone.
+/// Used by `eval::pieces::evaluate_pieces` to count attackers against the
+/// enemy king, and by `search::ordering::is_sacrificial` to decide whether
+/// a move's destination square targets the king area.
 #[inline]
 pub fn king_attack_zone(king_sq: i32, king_color: Color) -> Bitboard {
     let ring = king_attacks(king_sq);

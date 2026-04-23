@@ -52,7 +52,8 @@ impl Default for MoveList {
 impl MoveList {
     #[inline]
     pub fn new() -> Self {
-        // SAFETY: ScoredMove { mv: Move(0), score: 0 } is the default,
+        // SAFETY: every ScoredMove field has `0` as a valid bit pattern
+        // (Move is a u16 newtype, score is i32, is_sac is bool → false),
         // so all-zeros memory is a valid MoveList.
         unsafe { std::mem::zeroed() }
     }

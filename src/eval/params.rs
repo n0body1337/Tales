@@ -317,23 +317,27 @@ impl EvalParams {
             r_op: 3,     // rook penalty per own pawn (prefers open positions)
 
             // King attack accumulator values — NOT direct bonuses.
-            // These accumulate into an index for the non-linear danger[] table.
-            // ATT1 = attack on squares undefended by enemy pawns
-            // ATT2 = attack on squares defended by enemy pawns
-            // CHK  = threatening check to enemy king
+            // These accumulate into an index for the non-linear danger[]
+            // table, then get scaled by `sd_att`. The constants are
+            // amplified ~1.5× over Rodent's defaults so this engine
+            // weights pieces near the enemy king strongly enough to
+            // justify Tal-style sacrifices in the search.
+            // ATT1    = attack on squares undefended by enemy pawns
+            // ATT2    = attack on squares defended by enemy pawns
+            // CHK     = threatening check to enemy king
             // CONTACT = contact check threats (piece adjacent to king)
-            n_att1: 9,  // Tal: 6 → 9 (1.5x — bumps weight of attackers in king zone)
-            n_att2: 4,  // Tal: 3 → 4
-            b_att1: 9,  // Tal: 6 → 9
-            b_att2: 3,  // Tal: 2 → 3
-            r_att1: 13, // Tal: 9 → 13
-            r_att2: 6,  // Tal: 4 → 6
-            q_att1: 22, // Tal: 16 → 22
-            q_att2: 7,  // Tal: 5 → 7
-            n_chk: 6,   // Tal: 4 → 6 (knight check threats more dangerous)
-            b_chk: 8,   // Tal: 6 → 8
-            r_chk: 15,  // Tal: 11 → 15
-            q_chk: 16,  // Tal: 12 → 16
+            n_att1: 9,
+            n_att2: 4,
+            b_att1: 9,
+            b_att2: 3,
+            r_att1: 13,
+            r_att2: 6,
+            q_att1: 22,
+            q_att2: 7,
+            n_chk: 6,
+            b_chk: 8,
+            r_chk: 15,
+            q_chk: 16,
             r_contact: 24,
             q_contact: 36,
 
@@ -452,8 +456,8 @@ impl EvalParams {
             w_material: 48, // material counting weight
             w_pst: 100,     // piece-square table weight
 
-            w_threats: 230,  // piece pressure / hanging piece threats (Tal: 190 → 230)
-            w_tropism: 100,  // king tropism (Tal: 80 → 100)
+            w_threats: 230,  // piece pressure / hanging piece threats
+            w_tropism: 100,  // king tropism (piece proximity to enemy king)
             w_fwd: 0,        // forwardness bonus
             w_passers: 127,  // passed pawn evaluation
             w_mass: 100,     // pawn mass (phalanx + defended pawns)

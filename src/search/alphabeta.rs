@@ -92,9 +92,9 @@ pub struct SearchFrame {
     /// Square of the last capture (for recapture extensions).
     pub last_capt_sq: i32,
     /// Number of sacrificial follow-up extensions accumulated on this branch.
-    /// Capped at `root_depth / 2` to keep long sac chains from exploding the
-    /// search tree; the existing extensions (check/recapture/pawn-7th/
-    /// singular) are not counted against this budget.
+    /// Compared against `(root_depth + 1) / 4` inside the interior search to
+    /// cap long sac chains; the existing extensions (check / recapture /
+    /// pawn-7th / singular) are not counted against this budget.
     pub ply_extensions: i32,
 }
 
@@ -775,9 +775,10 @@ pub fn search(
             -1
         };
         // `was_sac` is the cached sacrifice classification from the move
-        // picker (populated by score_captures / score_quiet). It drives
-        // the M4 follow-up extension and the M5 pruning relaxation gates
-        // below, without needing to re-run `is_sacrificial` per move.
+        // picker (populated by `score_captures` / `score_quiet`). It
+        // drives the sacrificial follow-up extension and the sac-exempt
+        // futility / LMP / LMR gates below, without re-running
+        // `is_sacrificial` per move.
 
         let mut u = Undo::new();
         pos.do_move(mv, &mut u);
@@ -826,15 +827,14 @@ pub fn search(
             }
         }
 
-        // 5. sacrificial follow-up extension (M4) — catches the narrow
-        // case of a sacrificial recapture in PV that the (PV-only)
-        // recapture extension doesn't already pick up, and any
-        // check-plus-sacrifice pairs the existing check extension missed.
-        // The vast majority of sac+check moves are already extended by
-        // the check extension above; this is infrastructure that will be
-        // exercised more heavily by M5's pruning-relaxation gates. Capped
-        // per branch via SearchFrame::ply_extensions so long sac chains
-        // can't explode the tree.
+        // 4. sacrificial follow-up extension — keep a forcing line alive
+        // when we just played a sac (`was_sac`) and the result is either
+        // a check or a recapture. PV-only because non-PV variants in
+        // testing dropped pass rate. `!fl_extended` keeps us from
+        // double-extending sac+check moves (the check extension above
+        // already handles that common case). Capped per branch via
+        // `SearchFrame::ply_extensions` so a long sac chain can't blow
+        // up the search tree.
         let sac_ext_cap = (ctx.searcher.root_depth + 1) / 4;
         if !fl_extended
             && was_sac
@@ -847,7 +847,7 @@ pub fn search(
             sac_ext_used = true;
         }
 
-        // 4. singular extension, Senpai-style
+        // 5. singular extension, Senpai-style
         if is_pv && depth > 5 && mv == sing_move && can_sing && !fl_extended {
             let new_alpha_s = -sing_score - 50;
             let mut mock_pv = [Move::NONE; 1];
@@ -969,9 +969,10 @@ pub fn search(
         // PVS
         let mut score;
         loop {
-            // Increment ply_extensions only when M4's sac extension fired
-            // on this move; the existing extensions don't count toward the
-            // cap.
+            // Bump `ply_extensions` only when the sacrificial follow-up
+            // extension fired on this move; the existing extensions
+            // (check / recapture / pawn-7th / singular) don't count
+            // against the cap.
             let frame = SearchFrame {
                 was_null: false,
                 last_move: mv,

@@ -643,9 +643,10 @@ mod tests {
 
     // ========================================================================
     // End-to-end smoke test — a 3-position mini-suite that exercises the
-    // M3 ordering, M5 pruning relaxation, and N8 eval changes on known
-    // classical sacrifices. If this ever regresses, it signals a real
-    // break in the sac-finding logic before the big 209-position suite
+    // sacrifice-friendly move ordering, the futility / LMP / LMR
+    // relaxations for sac quiets, and the king-attack-amplified eval on
+    // three classical sacrifices. A regression here signals a real
+    // break in the sac-finding stack before the big 209-position suite
     // has to be run.
     // ========================================================================
 
@@ -699,9 +700,11 @@ mod tests {
         (san, passed)
     }
 
-    /// Three shallow sacrificial positions that every tuning since M3 has
-    /// found at 250 ms / position on our development hardware. This test
-    /// guards against M3–N8 logic being broken silently.
+    /// Three shallow sacrificial positions the engine reliably finds at
+    /// 250 ms / position on the development hardware. The test guards
+    /// against the sac classifier, the move-ordering bonuses, the
+    /// pruning relaxations, or the king-attack eval being broken
+    /// silently.
     #[test]
     fn smoke_finds_shallow_sacrifices() {
         init_engine();
@@ -732,8 +735,8 @@ mod tests {
                 eprintln!("smoke FAIL: fen={fen} bm={bm} got={got}");
             }
         }
-        // Allow one miss in case of scheduler/CI thermal noise; regressions
-        // that break M3 ordering or the classifier drop all three at once.
+        // Allow one miss in case of scheduler / CI thermal noise; a real
+        // break in the sac-finding stack drops all three at once.
         assert!(
             passed >= 2,
             "smoke suite expected at least 2/3 sacrifices, got {passed}/3"

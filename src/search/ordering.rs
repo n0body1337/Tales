@@ -103,13 +103,18 @@ impl MovePicker {
         }
     }
 
-    /// NextMove — main staged move picker (for search). Returns
-    /// `(move, kind, is_sac)`. `is_sac` is the cached sacrifice
-    /// classification: for scored-list phases (captures, quiets) it is
-    /// read from `ScoredMove.is_sac` and costs nothing; for single-move
-    /// phases (hash / killer / refutation) it is computed on the fly for
-    /// the one returned move only. Bad captures are never sacrificial
-    /// (M3 routes sac captures into the main pool).
+    /// Main staged move picker for the interior search. Returns
+    /// `(move, kind, is_sac)`.
+    ///
+    /// `is_sac` is the cached sacrifice classification:
+    ///   - scored-list phases (good captures, quiet moves) read it from
+    ///     `ScoredMove.is_sac` at zero cost;
+    ///   - single-move phases (hash / killer / refutation) compute
+    ///     `is_sacrificial` once for the one returned move;
+    ///   - bad captures are always reported as `false` because
+    ///     `bad_capture` only defers SEE-losing captures that do *not*
+    ///     target the king zone — sacrificial captures stay in the main
+    ///     pool with a `SAC_BONUS` boost from `score_captures`.
     pub fn next_move(
         &mut self,
         pos: &Position,
@@ -223,9 +228,10 @@ impl MovePicker {
                     self.phase = 8;
                 }
                 8 => {
-                    // Phase 8: return bad captures.
-                    // Sacs are never deferred here (M3 gate in `bad_capture`),
-                    // so we can hard-code `is_sac = false`.
+                    // Phase 8: return bad captures. `bad_capture` does
+                    // not defer sacrificial-style captures (they stay in
+                    // the main pool), so anything in `bad[]` is by
+                    // construction non-sacrificial — hard-code `false`.
                     if self.bad_next < self.bad_count {
                         let mv = self.bad[self.bad_next];
                         self.bad_next += 1;
@@ -452,12 +458,13 @@ pub fn mvv_lva(pos: &Position, mv: Move) -> i32 {
     5
 }
 
-/// BadCapture — should this capture be deferred to the bad-capture pool?
+/// Should this capture be deferred to the bad-capture pool?
 ///
-/// Since M3, sacrificial-style captures (SEE < -SAC_THRESHOLD that target
-/// the enemy king zone or deliver check) are NOT considered bad — they
-/// flow through the main capture phase with a SAC_BONUS already applied
-/// in `score_captures`, so the search actually tries them at this depth.
+/// Sacrificial-style captures (SEE < `-SAC_THRESHOLD` that target the
+/// enemy king zone or deliver check) are NOT considered bad — they flow
+/// through the main capture phase with a `SAC_BONUS` already applied in
+/// `score_captures`, so the search tries them at this depth instead of
+/// deferring them after every quiet move.
 ///
 /// En-passant captures short-circuit to `false` (non-bad) before the sac
 /// check runs, so an EP capture that would classify as sacrificial is
@@ -592,13 +599,17 @@ fn targets_king_or_checks(pos: &Position, mv: Move) -> bool {
     attacks::king_attack_zone(pos.king_sq(enemy), enemy).contains(mv.to_sq())
 }
 
-/// Sacrifice classifier — see module-level comment.
+/// Sacrifice classifier — see the section comment above for the
+/// motivation and the (SEE-loss) ∧ (target-king) definition.
 ///
-/// Pre-make-move predicate. Costs roughly one SEE call (~30 ns) plus one
-/// magic-bitboard ray check. Skip-list:
-/// - Castling: never classified as a sacrifice.
-/// - En-passant: rarely sacrificial in practice; SEE handles it correctly
-///   when reached but we don't fast-path it.
+/// Pre-make-move predicate. Cheap by design: the (cheap) king-zone /
+/// direct-check test runs first; the SEE call is only paid for the small
+/// fraction of moves that actually target the enemy king, so most quiet
+/// moves cost only a few bitboard ops.
+///
+/// Skip list:
+///   - Castling: never classified as a sacrifice.
+///   - En-passant: rarely sacrificial in practice; we don't fast-path it.
 #[inline]
 pub fn is_sacrificial(pos: &Position, mv: Move) -> bool {
     if mv.is_none() || mv.move_type() == CASTLE {
