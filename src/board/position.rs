@@ -933,10 +933,8 @@ impl Position {
                     && self.pc[(tsq ^ 8) as usize] == NO_PC
                     && ((tsq > fsq && sd == WC) || (tsq < fsq && sd == BC));
             }
-            N_PROM | B_PROM | R_PROM | Q_PROM => {
-                if ftp != P {
-                    return false;
-                }
+            N_PROM | B_PROM | R_PROM | Q_PROM if ftp != P => {
+                return false;
             }
             _ => {}
         }

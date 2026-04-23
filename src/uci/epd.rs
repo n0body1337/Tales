@@ -504,9 +504,7 @@ pub fn run_suite(args: &[String]) {
     } else {
         depths[depths.len() / 2]
     };
-    let nps = (total_nodes * 1000)
-        .checked_div(suite_ms)
-        .unwrap_or(0);
+    let nps = (total_nodes * 1000).checked_div(suite_ms).unwrap_or(0);
 
     println!();
     println!("=== Suite summary ===");

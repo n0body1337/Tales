@@ -522,11 +522,7 @@ fn gives_direct_check(pos: &Position, mv: Move) -> bool {
     let occ_after = (pos.occ_bb() ^ Bitboard::from_sq(from)) | Bitboard::from_sq(to);
 
     // The piece that lands on `to` after the move (account for promotions).
-    let landing = if mv.is_prom() {
-        mv.prom_type()
-    } else {
-        mover
-    };
+    let landing = if mv.is_prom() { mv.prom_type() } else { mover };
 
     let attack_bb = match landing {
         PieceType::Pawn => attacks::pawn_attacks(pos.side, to),
@@ -577,53 +573,6 @@ pub fn is_sacrificial(pos: &Position, mv: Move) -> bool {
     // Material loss check (SEE-based). A move that wins or breaks even
     // on material isn't a sacrifice even if it attacks the king.
     see::see(pos, mv.from_sq(), mv.to_sq()) < -SAC_THRESHOLD
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::board::position::Position;
-
-    fn setup() -> Position {
-        // Initialize attack tables and PST tables once.
-        crate::board::init();
-        let par = eval::params::EvalParams::new();
-        eval::global_pst::init(&par);
-        Position::new()
-    }
-
-    #[test]
-    fn classic_bxh7_sac_classifies() {
-        let mut pos = setup();
-        // Standard "Greek gift" position — Bxh7+ wins king for nothing,
-        // but SEE is negative because the bishop is uncovered.
-        pos.set_position("rnbqk2r/ppp2ppp/3p1n2/4p3/1bB1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq -");
-        let mv = pos.str_to_move("c4f7");
-        assert!(pos.legal(mv));
-        // Bxf7+ is the canonical Italian-game sac; it gives check and SEE is
-        // negative (bishop for pawn). Should classify true.
-        assert!(is_sacrificial(&pos, mv), "Bxf7+ should be classified as sacrificial");
-    }
-
-    #[test]
-    fn quiet_centralizing_knight_does_not_classify() {
-        let mut pos = setup();
-        pos.set_position("rnbqkbnr/pppppppp/8/8/8/2N5/PPPPPPPP/R1BQKBNR w KQkq -");
-        // Nd5 — centralizing, SEE=0, not in king zone — should not classify.
-        let mv = pos.str_to_move("c3d5");
-        assert!(pos.legal(mv));
-        assert!(!is_sacrificial(&pos, mv));
-    }
-
-    #[test]
-    fn equal_capture_does_not_classify() {
-        let mut pos = setup();
-        pos.set_position("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -");
-        // Nxe5 — wins a pawn cleanly; not sacrificial.
-        let mv = pos.str_to_move("f3e5");
-        assert!(pos.legal(mv));
-        assert!(!is_sacrificial(&pos, mv));
-    }
 }
 
 // ============================================================================
@@ -904,4 +853,54 @@ fn input_available() -> bool {
     // SAFETY: pfd is a valid stack-allocated struct; nfds=1; timeout=0 is non-blocking.
     let ret = unsafe { poll(&mut pfd, 1, 0) };
     ret > 0 && (pfd.revents & POLLIN) != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::position::Position;
+
+    fn setup() -> Position {
+        // Initialize attack tables and PST tables once.
+        crate::board::init();
+        let par = eval::params::EvalParams::new();
+        eval::global_pst::init(&par);
+        Position::new()
+    }
+
+    #[test]
+    fn classic_bxh7_sac_classifies() {
+        let mut pos = setup();
+        // Standard "Greek gift" position — Bxh7+ wins king for nothing,
+        // but SEE is negative because the bishop is uncovered.
+        pos.set_position("rnbqk2r/ppp2ppp/3p1n2/4p3/1bB1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq -");
+        let mv = pos.str_to_move("c4f7");
+        assert!(pos.legal(mv));
+        // Bxf7+ is the canonical Italian-game sac; it gives check and SEE is
+        // negative (bishop for pawn). Should classify true.
+        assert!(
+            is_sacrificial(&pos, mv),
+            "Bxf7+ should be classified as sacrificial"
+        );
+    }
+
+    #[test]
+    fn quiet_centralizing_knight_does_not_classify() {
+        let mut pos = setup();
+        pos.set_position("rnbqkbnr/pppppppp/8/8/8/2N5/PPPPPPPP/R1BQKBNR w KQkq -");
+        // Nd5 — centralizing, SEE=0, not in king zone — should not classify.
+        let mv = pos.str_to_move("c3d5");
+        assert!(pos.legal(mv));
+        assert!(!is_sacrificial(&pos, mv));
+    }
+
+    #[test]
+    fn equal_capture_does_not_classify() {
+        let mut pos = setup();
+        pos.set_position("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -");
+        // Nxe5 — wins a pawn cleanly; not sacrificial.
+        let mv = pos.str_to_move("f3e5");
+        assert!(pos.legal(mv));
+        assert!(!is_sacrificial(&pos, mv));
+    }
 }

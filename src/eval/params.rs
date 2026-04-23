@@ -322,18 +322,18 @@ impl EvalParams {
             // ATT2 = attack on squares defended by enemy pawns
             // CHK  = threatening check to enemy king
             // CONTACT = contact check threats (piece adjacent to king)
-            n_att1: 9,    // Tal: 6 → 9 (1.5x — bumps weight of attackers in king zone)
-            n_att2: 4,    // Tal: 3 → 4
-            b_att1: 9,    // Tal: 6 → 9
-            b_att2: 3,    // Tal: 2 → 3
-            r_att1: 13,   // Tal: 9 → 13
-            r_att2: 6,    // Tal: 4 → 6
-            q_att1: 22,   // Tal: 16 → 22
-            q_att2: 7,    // Tal: 5 → 7
-            n_chk: 6,     // Tal: 4 → 6 (knight check threats more dangerous)
-            b_chk: 8,     // Tal: 6 → 8
-            r_chk: 15,    // Tal: 11 → 15
-            q_chk: 16,    // Tal: 12 → 16
+            n_att1: 9,  // Tal: 6 → 9 (1.5x — bumps weight of attackers in king zone)
+            n_att2: 4,  // Tal: 3 → 4
+            b_att1: 9,  // Tal: 6 → 9
+            b_att2: 3,  // Tal: 2 → 3
+            r_att1: 13, // Tal: 9 → 13
+            r_att2: 6,  // Tal: 4 → 6
+            q_att1: 22, // Tal: 16 → 22
+            q_att2: 7,  // Tal: 5 → 7
+            n_chk: 6,   // Tal: 4 → 6 (knight check threats more dangerous)
+            b_chk: 8,   // Tal: 6 → 8
+            r_chk: 15,  // Tal: 11 → 15
+            q_chk: 16,  // Tal: 12 → 16
             r_contact: 24,
             q_contact: 36,
 

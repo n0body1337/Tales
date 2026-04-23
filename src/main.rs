@@ -221,11 +221,7 @@ fn run_bench() {
         search::alphabeta::print_bestmove(&ctx);
         let elapsed_ms = t0.elapsed().as_millis() as u64;
         let nodes = ctx.searcher.nodes;
-        let nps = if elapsed_ms > 0 {
-            nodes * 1000 / elapsed_ms
-        } else {
-            0
-        };
+        let nps = (nodes * 1000).checked_div(elapsed_ms).unwrap_or(0);
         total_nodes += nodes;
 
         println!(
@@ -235,11 +231,7 @@ fn run_bench() {
     }
 
     let total_ms = bench_start.elapsed().as_millis() as u64;
-    let total_nps = if total_ms > 0 {
-        total_nodes * 1000 / total_ms
-    } else {
-        0
-    };
+    let total_nps = (total_nodes * 1000).checked_div(total_ms).unwrap_or(0);
     println!("{}", "-".repeat(62));
     println!(
         "{:<20} {:>6} {:>12} {:>10} {:>8}",
