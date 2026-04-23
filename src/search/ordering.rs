@@ -518,10 +518,14 @@ pub fn bad_capture(pos: &Position, mv: Move) -> bool {
 // (king tropism, line opening) rather than by the search bias.
 
 /// SEE threshold below which a move is considered to "lose material".
-/// 90 cp ≈ slightly less than a minor piece, so capturing a defended pawn
-/// with a piece (SEE ≈ −225) qualifies, while a routine SEE = −10 wood
-/// shuffle does not.
-pub const SAC_THRESHOLD: i32 = 90;
+/// 40 cp ≈ half a pawn, so a pawn sham sacrifice for tempo/initiative
+/// qualifies — and so does every full-piece sac. Tal gave up pawns for
+/// initiative constantly; the previous 90 cp cut-off was filtering those
+/// out. Random SEE ≈ −10 wood shuffles still fall under this threshold
+/// and do not qualify, and the king-zone / check conjunction in
+/// `is_sacrificial` prevents plain queenside pawn losses from being
+/// mis-classified.
+pub const SAC_THRESHOLD: i32 = 40;
 
 /// Score bonus applied to sacrificial captures in `score_captures` so they
 /// sort right after good captures and ahead of all quiet moves. Bigger than
@@ -535,27 +539,30 @@ pub const SAC_BONUS: i32 = 400;
 /// continuation already known to refute the previous move.
 pub const SAC_QUIET_BONUS: i32 = 1500;
 
-/// Cheap pre-move "does this move deliver direct check?" test.
+/// Cheap pre-move "does this move give check?" test, covering both direct
+/// and discovered checks.
 ///
 /// # Scope
 ///
-/// Direct checks only — the move places its piece on a square that attacks
-/// the enemy king. This covers the dominant sacrificial family
-/// (Bxh7+ / Nxf7+ / Rxg7+ / Qh5+).
+/// - **Direct check** — the landing piece (post-promotion) attacks the
+///   enemy king. Dominant sacrificial family: Bxh7+ / Nxf7+ / Rxg7+ / Qh5+.
+/// - **Discovered check** — after vacating `from`, some other friendly
+///   slider now attacks the enemy king. Because it is the enemy's king
+///   and our move has just been made, the only way a friendly slider
+///   attacks `king_sq` with `occ_after` is either (a) the slider is the
+///   landing piece (direct case) or (b) the slider was blocked by the
+///   mover's `from` square and is now unblocked (discovered case). We
+///   detect both with the same post-move occupancy.
 ///
 /// # Known limitations (accepted)
 ///
-/// - **Discovered checks** (a slider behind the moving piece is uncovered)
-///   are not detected. Detecting them would require scanning all friendly
-///   sliders on rays through `from`, which doubles the classifier cost on
-///   the hot path; they are rare in the EPD suite and do not justify it.
 /// - **En-passant captures**: the computed `occ_after` removes the from-
 ///   square and sets the to-square but does NOT remove the captured pawn
 ///   from its rank (for ep the captured pawn sits on `to ± 8`). A slider
 ///   check that only appears because the EP pawn has vanished is therefore
 ///   a false negative. EP sacs are vanishingly rare, so this is accepted.
 #[inline]
-fn gives_direct_check(pos: &Position, mv: Move) -> bool {
+fn gives_check(pos: &Position, mv: Move) -> bool {
     let from = mv.from_sq();
     let to = mv.to_sq();
     let mover = pos.tp_on_sq(from);
@@ -563,7 +570,8 @@ fn gives_direct_check(pos: &Position, mv: Move) -> bool {
         return false;
     }
 
-    let enemy = !pos.side;
+    let our = pos.side;
+    let enemy = !our;
     let king_sq = pos.king_sq(enemy);
 
     // Approximate post-move occupancy: clear `from`, set `to`. This is
@@ -574,8 +582,8 @@ fn gives_direct_check(pos: &Position, mv: Move) -> bool {
     // The piece that lands on `to` after the move (account for promotions).
     let landing = if mv.is_prom() { mv.prom_type() } else { mover };
 
-    let attack_bb = match landing {
-        PieceType::Pawn => attacks::pawn_attacks(pos.side, to),
+    let direct_bb = match landing {
+        PieceType::Pawn => attacks::pawn_attacks(our, to),
         PieceType::Knight => attacks::knight_attacks(to),
         PieceType::Bishop => attacks::bishop_attacks(occ_after, to),
         PieceType::Rook => attacks::rook_attacks(occ_after, to),
@@ -583,7 +591,30 @@ fn gives_direct_check(pos: &Position, mv: Move) -> bool {
         PieceType::King => attacks::king_attacks(to),
         PieceType::None => return false,
     };
-    attack_bb.contains(king_sq)
+    if direct_bb.contains(king_sq) {
+        return true;
+    }
+
+    // Discovered check. The enemy king is not in check before the move
+    // (it's our turn), so any friendly slider that attacks `king_sq` with
+    // `occ_after` must either be the mover (handled by the direct-check
+    // branch above) or a slider whose line was unblocked by vacating
+    // `from`. We exclude the mover's landing square from the slider sets
+    // so the direct-check case doesn't re-trigger here as a false
+    // discovered.
+    let to_bb = Bitboard::from_sq(to);
+    let straight = pos.straight_movers(our) & !to_bb;
+    if straight.is_not_empty()
+        && (attacks::rook_attacks(occ_after, king_sq) & straight).is_not_empty()
+    {
+        return true;
+    }
+    let diag = pos.diag_movers(our) & !to_bb;
+    if diag.is_not_empty() && (attacks::bishop_attacks(occ_after, king_sq) & diag).is_not_empty() {
+        return true;
+    }
+
+    false
 }
 
 /// "Does this move target the enemy king?" — the (check OR king-zone) leg of
@@ -592,7 +623,7 @@ fn gives_direct_check(pos: &Position, mv: Move) -> bool {
 /// SEE call once they already know the move loses material.
 #[inline]
 fn targets_king_or_checks(pos: &Position, mv: Move) -> bool {
-    if gives_direct_check(pos, mv) {
+    if gives_check(pos, mv) {
         return true;
     }
     let enemy = !pos.side;
