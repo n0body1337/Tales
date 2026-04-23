@@ -24,10 +24,15 @@ use crate::board::moves::Move;
 pub const MAX_MOVES: usize = 256;
 
 /// A move paired with a score for move ordering.
+///
+/// The `is_sac` flag is populated by `score_captures` / `score_quiet` so the
+/// main search loop can reuse the classification without a second
+/// `is_sacrificial` call per move.
 #[derive(Clone, Copy, Default)]
 pub struct ScoredMove {
     pub mv: Move,
     pub score: i32,
+    pub is_sac: bool,
 }
 
 /// Stack-allocated list of scored moves.
@@ -57,7 +62,13 @@ impl MoveList {
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.count < MAX_MOVES);
         // SAFETY: count is always < MAX_MOVES (asserted in debug)
-        unsafe { *self.moves.get_unchecked_mut(self.count) = ScoredMove { mv, score: 0 } };
+        unsafe {
+            *self.moves.get_unchecked_mut(self.count) = ScoredMove {
+                mv,
+                score: 0,
+                is_sac: false,
+            }
+        };
         self.count += 1;
     }
 

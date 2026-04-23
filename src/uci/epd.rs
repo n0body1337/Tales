@@ -551,3 +551,192 @@ fn csv_escape(s: &str) -> String {
         s.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tt::TransTable;
+
+    fn init_engine() {
+        crate::board::init();
+        let par = eval::params::EvalParams::new();
+        eval::global_pst::init(&par);
+    }
+
+    // ========================================================================
+    // EPD parser
+    // ========================================================================
+
+    #[test]
+    fn parse_epd_simple_bm() {
+        let line = r#"8/8/8/8/8/8/8/4K2k w - - bm Ke1; id "tiny""#;
+        let rec = parse_epd_line(line).expect("parses");
+        assert_eq!(rec.fen, "8/8/8/8/8/8/8/4K2k w - -");
+        assert_eq!(rec.bm, "Ke1");
+        assert_eq!(rec.id, "tiny");
+    }
+
+    #[test]
+    fn parse_epd_strips_check_suffix() {
+        let line = r#"r1b1k2r/ppp4p/4p1p1/1q1pN2Q/8/2b5/P4PPP/R1B2RK1 w kq - bm Nxg6+; id "x""#;
+        let rec = parse_epd_line(line).expect("parses");
+        assert_eq!(rec.bm, "Nxg6"); // `+` stripped
+    }
+
+    #[test]
+    fn parse_epd_skips_blank_and_comment() {
+        assert!(parse_epd_line("").is_none());
+        assert!(parse_epd_line("   ").is_none());
+        assert!(parse_epd_line("# a comment").is_none());
+    }
+
+    // ========================================================================
+    // SAN converter
+    // ========================================================================
+
+    #[test]
+    fn san_roundtrip_basic() {
+        init_engine();
+        let mut pos = Position::new();
+        pos.set_position(START_POS);
+        // 1. e4
+        let mv = san_to_move(&mut pos, "e4").expect("e4 resolves");
+        let legal = legal_moves(&mut pos);
+        assert_eq!(move_to_san(&mut pos, mv, &legal), "e4");
+    }
+
+    #[test]
+    fn san_disambiguation_by_file() {
+        init_engine();
+        // Two knights on the same rank (b1, g1) — only one reaches d2 or f3
+        // in startpos, but after 1. Nf3 Nf6 2. Nc3 Nc6, both sides have two
+        // knights that could disambiguate. We just check the writer emits
+        // the piece letter + file when two same-type movers reach a square.
+        let mut pos = Position::new();
+        pos.set_position("8/8/8/8/8/8/8/N1N1K2k w - -"); // two white knights a1/c1
+        // Both can reach b3; SAN should include a disambiguating file.
+        let mv = san_to_move(&mut pos, "Nab3").expect("Nab3 resolves");
+        let legal = legal_moves(&mut pos);
+        let san = move_to_san(&mut pos, mv, &legal);
+        assert!(san == "Nab3", "expected Nab3, got {san}");
+    }
+
+    #[test]
+    fn san_castling() {
+        init_engine();
+        let mut pos = Position::new();
+        pos.set_position("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq -");
+        let mv = san_to_move(&mut pos, "O-O").expect("O-O resolves");
+        let legal = legal_moves(&mut pos);
+        assert_eq!(move_to_san(&mut pos, mv, &legal), "O-O");
+    }
+
+    #[test]
+    fn san_promotion() {
+        init_engine();
+        let mut pos = Position::new();
+        pos.set_position("4k3/P7/8/8/8/8/8/4K3 w - -");
+        let mv = san_to_move(&mut pos, "a8=Q").expect("a8=Q resolves");
+        let legal = legal_moves(&mut pos);
+        assert_eq!(move_to_san(&mut pos, mv, &legal), "a8=Q");
+    }
+
+    // ========================================================================
+    // End-to-end smoke test — a 3-position mini-suite that exercises the
+    // M3 ordering, M5 pruning relaxation, and N8 eval changes on known
+    // classical sacrifices. If this ever regresses, it signals a real
+    // break in the sac-finding logic before the big 209-position suite
+    // has to be run.
+    // ========================================================================
+
+    /// Run a single position through the same search path the suite uses
+    /// and return `(engine_move_san, bm_was_found)`. Books are bypassed
+    /// because we don't touch `parse_go`.
+    fn run_one(fen: &str, bm: &str, time_ms: u64) -> (String, bool) {
+        let mut par = eval::params::EvalParams::new();
+        eval::global_pst::init(&par);
+        let mut tt = TransTable::new(4);
+        let mut eval_hash = eval::new_eval_hash();
+        let mut pawn_tt = eval::pawn_hash::PawnHash::new();
+        let mut searcher = search::ordering::Searcher::new();
+        let mut pos = Position::new();
+
+        pos.set_position(fen);
+        tt.clear();
+        searcher.clear_all();
+        searcher.nodes = 0;
+        searcher.dp_completed = 0;
+        searcher.pv_eng = [Move::NONE; 2];
+        searcher.abort_search = false;
+        searcher.silent = true;
+        searcher.time_limit_ms = time_ms;
+        searcher.move_overhead_ms = 0;
+        searcher.multi_pv = 1;
+        par.init_asymmetric(pos.side);
+
+        let target = san_to_move(&mut pos, bm);
+        {
+            let lmr = search::alphabeta::lmr_table();
+            let mut ctx = search::ordering::SearchCtx {
+                searcher: &mut searcher,
+                tt: &mut tt,
+                par: &par,
+                eval_hash: &mut eval_hash,
+                pawn_tt: &mut pawn_tt,
+                lmr,
+            };
+            search::alphabeta::iterate(&mut ctx, &mut pos, MAX_PLY as i32);
+        }
+
+        let engine_mv = searcher.pv_eng[0];
+        let passed = matches!(target, Some(t) if t == engine_mv);
+        let legal = legal_moves(&mut pos);
+        let san = if engine_mv.is_none() {
+            "(none)".to_string()
+        } else {
+            move_to_san(&mut pos, engine_mv, &legal)
+        };
+        (san, passed)
+    }
+
+    /// Three shallow sacrificial positions that every tuning since M3 has
+    /// found at 250 ms / position on our development hardware. This test
+    /// guards against M3–N8 logic being broken silently.
+    #[test]
+    fn smoke_finds_shallow_sacrifices() {
+        init_engine();
+        let cases: &[(&str, &str)] = &[
+            // Max Lange–Anderssen 1859 — Nxg6 demolishes the kingside.
+            (
+                "r1b1k2r/ppp4p/4p1p1/1q1pN2Q/8/2b5/P4PPP/R1B2RK1 w kq -",
+                "Nxg6",
+            ),
+            // Zukertort–Anderssen 1865 — classical Greek gift Bxh7+.
+            (
+                "r1bqr1k1/p4ppp/2p1p3/b1B5/8/1R1B4/P1P2PPP/3Q1RK1 w - -",
+                "Bxh7",
+            ),
+            // Alekhine–Diurnbaum 1910 — Rxh6+ tears the kingside open.
+            (
+                "r2b1r1k/1bnq2p1/p3p1Rp/1pPpP2Q/1P1N1P2/2PB3N/P2n3P/R6K w - -",
+                "Rxh6",
+            ),
+        ];
+
+        let mut passed = 0;
+        for (fen, bm) in cases {
+            let (got, ok) = run_one(fen, bm, 250);
+            if ok {
+                passed += 1;
+            } else {
+                eprintln!("smoke FAIL: fen={fen} bm={bm} got={got}");
+            }
+        }
+        // Allow one miss in case of scheduler/CI thermal noise; regressions
+        // that break M3 ordering or the classifier drop all three at once.
+        assert!(
+            passed >= 2,
+            "smoke suite expected at least 2/3 sacrifices, got {passed}/3"
+        );
+    }
+}

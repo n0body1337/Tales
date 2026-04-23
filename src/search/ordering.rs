@@ -103,8 +103,18 @@ impl MovePicker {
         }
     }
 
-    /// NextMove — main staged move picker (for search). Returns (move, kind).
-    pub fn next_move(&mut self, pos: &Position, history: &[[i32; 64]; 13]) -> (Move, MoveKind) {
+    /// NextMove — main staged move picker (for search). Returns
+    /// `(move, kind, is_sac)`. `is_sac` is the cached sacrifice
+    /// classification: for scored-list phases (captures, quiets) it is
+    /// read from `ScoredMove.is_sac` and costs nothing; for single-move
+    /// phases (hash / killer / refutation) it is computed on the fly for
+    /// the one returned move only. Bad captures are never sacrificial
+    /// (M3 routes sac captures into the main pool).
+    pub fn next_move(
+        &mut self,
+        pos: &Position,
+        history: &[[i32; 64]; 13],
+    ) -> (Move, MoveKind, bool) {
         loop {
             match self.phase {
                 0 => {
@@ -112,7 +122,7 @@ impl MovePicker {
                     let mv = self.trans_move;
                     self.phase = 1;
                     if mv.is_some() && pos.legal(mv) {
-                        return (mv, MoveKind::Hash);
+                        return (mv, MoveKind::Hash, is_sacrificial(pos, mv));
                     }
                 }
                 1 => {
@@ -127,7 +137,8 @@ impl MovePicker {
                 2 => {
                     // Phase 2: return good captures, defer bad ones
                     while self.next_idx < self.list.count {
-                        let mv = self.list.best_move(self.next_idx);
+                        let idx = self.next_idx;
+                        let mv = self.list.best_move(idx);
                         self.next_idx += 1;
                         if mv == self.trans_move {
                             continue;
@@ -139,7 +150,10 @@ impl MovePicker {
                             }
                             continue;
                         }
-                        return (mv, MoveKind::Capture);
+                        // `best_move` swapped the best-scoring entry to
+                        // position `idx`; read the cached sac flag there.
+                        let is_sac = self.list.moves[idx].is_sac;
+                        return (mv, MoveKind::Capture, is_sac);
                     }
                     self.phase = 3;
                 }
@@ -152,7 +166,7 @@ impl MovePicker {
                         && pos.pc[mv.to_sq() as usize] == NO_PC
                         && pos.legal(mv)
                     {
-                        return (mv, MoveKind::Killer);
+                        return (mv, MoveKind::Killer, is_sacrificial(pos, mv));
                     }
                 }
                 4 => {
@@ -164,7 +178,7 @@ impl MovePicker {
                         && pos.pc[mv.to_sq() as usize] == NO_PC
                         && pos.legal(mv)
                     {
-                        return (mv, MoveKind::Killer);
+                        return (mv, MoveKind::Killer, is_sacrificial(pos, mv));
                     }
                 }
                 5 => {
@@ -178,7 +192,7 @@ impl MovePicker {
                         && mv != self.killer2
                         && pos.legal(mv)
                     {
-                        return (mv, MoveKind::Refutation);
+                        return (mv, MoveKind::Refutation, is_sacrificial(pos, mv));
                     }
                 }
                 6 => {
@@ -192,7 +206,8 @@ impl MovePicker {
                 7 => {
                     // Phase 7: return quiet moves
                     while self.next_idx < self.list.count {
-                        let mv = self.list.best_move(self.next_idx);
+                        let idx = self.next_idx;
+                        let mv = self.list.best_move(idx);
                         self.next_idx += 1;
                         if mv == self.trans_move
                             || mv == self.killer1
@@ -201,21 +216,24 @@ impl MovePicker {
                         {
                             continue;
                         }
-                        return (mv, MoveKind::Normal);
+                        let is_sac = self.list.moves[idx].is_sac;
+                        return (mv, MoveKind::Normal, is_sac);
                     }
                     self.bad_next = 0;
                     self.phase = 8;
                 }
                 8 => {
-                    // Phase 8: return bad captures
+                    // Phase 8: return bad captures.
+                    // Sacs are never deferred here (M3 gate in `bad_capture`),
+                    // so we can hard-code `is_sac = false`.
                     if self.bad_next < self.bad_count {
                         let mv = self.bad[self.bad_next];
                         self.bad_next += 1;
-                        return (mv, MoveKind::BadCapt);
+                        return (mv, MoveKind::BadCapt, false);
                     }
-                    return (Move::NONE, MoveKind::Normal);
+                    return (Move::NONE, MoveKind::Normal, false);
                 }
-                _ => return (Move::NONE, MoveKind::Normal),
+                _ => return (Move::NONE, MoveKind::Normal, false),
             }
         }
     }
@@ -363,11 +381,14 @@ fn score_captures(pos: &Position, list: &mut MoveList) {
         let entry = unsafe { list.moves.get_unchecked_mut(i) };
         let mv = entry.mv;
         let mut sc = mvv_lva(pos, mv);
+        let mut is_sac = false;
         // Sacrificial-capture promotion: SEE-losing captures that target
         // the enemy king zone or deliver check get bumped above the rest of
         // the bad captures so they sort with the good ones rather than
         // being deferred. Only spend the SEE call when the move could
-        // possibly need it (cheap MVV-LVA filter first).
+        // possibly need it (cheap MVV-LVA filter first). The `is_sac` flag
+        // is cached on the entry so the main search loop doesn't have to
+        // re-run `is_sacrificial` on the returned move.
         let from = mv.from_sq();
         let to = mv.to_sq();
         if mv.move_type() != EP_CAP
@@ -376,8 +397,10 @@ fn score_captures(pos: &Position, list: &mut MoveList) {
             && targets_king_or_checks(pos, mv)
         {
             sc += SAC_BONUS;
+            is_sac = true;
         }
         entry.score = sc;
+        entry.is_sac = is_sac;
     }
 }
 
@@ -400,10 +423,14 @@ fn score_quiet(pos: &Position, list: &mut MoveList, history: &[[i32; 64]; 13], r
         // queen lift to the attack zone). `is_sacrificial` fast-fails
         // on the common case (move doesn't attack the king), so SEE
         // is only paid for moves that actually target the king.
-        if is_sacrificial(pos, mv) {
+        // The `is_sac` flag is cached on the entry so the main search
+        // loop can use it without re-running the classifier.
+        let is_sac = is_sacrificial(pos, mv);
+        if is_sac {
             sc += SAC_QUIET_BONUS;
         }
         entry.score = sc;
+        entry.is_sac = is_sac;
     }
 }
 
@@ -431,6 +458,11 @@ pub fn mvv_lva(pos: &Position, mv: Move) -> i32 {
 /// the enemy king zone or deliver check) are NOT considered bad — they
 /// flow through the main capture phase with a SAC_BONUS already applied
 /// in `score_captures`, so the search actually tries them at this depth.
+///
+/// En-passant captures short-circuit to `false` (non-bad) before the sac
+/// check runs, so an EP capture that would classify as sacrificial is
+/// treated identically to any other EP and never visits the sac path. EP
+/// sacs are too rare to justify extending this gate.
 #[inline]
 pub fn bad_capture(pos: &Position, mv: Move) -> bool {
     let fsq = mv.from_sq();
@@ -498,11 +530,23 @@ pub const SAC_QUIET_BONUS: i32 = 1500;
 
 /// Cheap pre-move "does this move deliver direct check?" test.
 ///
-/// Considers only direct checks from the destination square (the dominant
-/// case for Bxh7+ / Nxf7+ / Rxg7+ / Qh5+ family of sacrifices). Discovered
-/// checks are intentionally not considered — they are rare in the EPD test
-/// suite and adding them would bloat the hot path that runs in capture
-/// scoring.
+/// # Scope
+///
+/// Direct checks only — the move places its piece on a square that attacks
+/// the enemy king. This covers the dominant sacrificial family
+/// (Bxh7+ / Nxf7+ / Rxg7+ / Qh5+).
+///
+/// # Known limitations (accepted)
+///
+/// - **Discovered checks** (a slider behind the moving piece is uncovered)
+///   are not detected. Detecting them would require scanning all friendly
+///   sliders on rays through `from`, which doubles the classifier cost on
+///   the hot path; they are rare in the EPD suite and do not justify it.
+/// - **En-passant captures**: the computed `occ_after` removes the from-
+///   square and sets the to-square but does NOT remove the captured pawn
+///   from its rank (for ep the captured pawn sits on `to ± 8`). A slider
+///   check that only appears because the EP pawn has vanished is therefore
+///   a false negative. EP sacs are vanishingly rare, so this is accepted.
 #[inline]
 fn gives_direct_check(pos: &Position, mv: Move) -> bool {
     let from = mv.from_sq();
@@ -515,10 +559,9 @@ fn gives_direct_check(pos: &Position, mv: Move) -> bool {
     let enemy = !pos.side;
     let king_sq = pos.king_sq(enemy);
 
-    // Approximate post-move occupancy: the from-square clears and the
-    // to-square is set. This is sufficient for direct-check detection of
-    // the moving piece (we don't worry about ep capture removing a third
-    // pawn here — that's a discovered-check case we accept missing).
+    // Approximate post-move occupancy: clear `from`, set `to`. This is
+    // correct for ordinary captures and quiet moves. See the function
+    // docstring above for the ep-capture corner case we deliberately skip.
     let occ_after = (pos.occ_bb() ^ Bitboard::from_sq(from)) | Bitboard::from_sq(to);
 
     // The piece that lands on `to` after the move (account for promotions).
