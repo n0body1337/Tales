@@ -15,7 +15,7 @@
 
 ## Overview
 
-Tales is a UCI chess engine written in Rust. It is a ground-up reimplementation inspired by [OpenTal](https://github.com/sTaleksY/OpenTal) — itself a derivative of **Rodent III** by **Pawel Koziol** — rewritten in idiomatic Rust with a focus on speed and correctness.
+Tales is a UCI chess engine written in Rust. It is a ground-up reimplementation inspired by [OpenTal](https://github.com/sTaleksY/OpenTal) — itself a derivative of **Rodent III** by **Pawel Koziol** — rewritten in idiomatic Rust with a focus on speed and on playing in the attacking, sacrificial style of **Mikhail Tal**.
 
 ## Architecture
 
