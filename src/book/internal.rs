@@ -126,7 +126,7 @@ pub fn probe(pos: &Position, verbose: bool, book_filter: i32) -> Option<Move> {
     let key = polyglot::polyglot_key(pos);
 
     if verbose {
-        println!("info string probing tales.bin (key={key:#018x})...");
+        println!("info string probing internal book (key={key:#018x})...");
     }
 
     let start = find_pos(key);

@@ -407,13 +407,17 @@ pub fn polyglot_move_to_string(raw: u16, pos: &Position) -> String {
     s
 }
 
-/// xorshift64 PRNG for weighted random selection.
+/// xorshift64 PRNG — returns a uniformly distributed value in `[0, n)`.
+///
+/// Caller must pass `n > 0`. The upper 32 bits of the xorshift state are
+/// treated as an unsigned `u32` so the modulo is always non-negative.
 #[inline]
 pub fn simple_random(state: &mut u64, n: i32) -> i32 {
+    debug_assert!(n > 0, "simple_random requires n > 0");
     *state ^= *state << 13;
     *state ^= *state >> 7;
     *state ^= *state << 17;
-    ((*state >> 1) as i32) % n
+    ((*state >> 32) as u32 % n as u32) as i32
 }
 
 /// Returns true if a move weight should be considered infrequent / filtered out.
@@ -427,4 +431,62 @@ pub fn is_infrequent(val: i32, max_weight: i32, book_filter: i32) -> bool {
         return true;
     }
     val < (max_weight * book_filter) / 100
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `simple_random(state, n)` must return a value in `[0, n)` for every
+    /// possible xorshift state — no negative leakage from the old i32 cast.
+    #[test]
+    fn simple_random_is_non_negative_and_bounded() {
+        let mut state: u64 = 1;
+        let n: i32 = 99;
+        for _ in 0..100_000 {
+            let r = simple_random(&mut state, n);
+            assert!(r >= 0 && r < n, "simple_random returned {r} for n={n}");
+        }
+    }
+
+    /// Weighted-sample probabilities used in the book selector must match
+    /// the declared weights. The old PRNG biased selection toward later
+    /// candidates by ~50%; this guards against that regression.
+    #[test]
+    fn weighted_sample_matches_weights() {
+        // Two candidates with weights 83 and 16 (mirrors the 1.e4/1.d4 split
+        // in the embedded Tal book). Correct P(first) = 83/99 ≈ 0.838.
+        const W1: i32 = 83;
+        const W2: i32 = 16;
+        const TRIALS: u32 = 200_000;
+
+        let mut state: u64 = 0xDEADBEEF_CAFEBABE;
+        let mut first_count = 0u32;
+
+        for _ in 0..TRIALS {
+            let mut vals_acc: i32 = 0;
+            let mut pick_first = false;
+
+            vals_acc += W1;
+            if simple_random(&mut state, vals_acc) < W1 {
+                pick_first = true;
+            }
+
+            vals_acc += W2;
+            if simple_random(&mut state, vals_acc) < W2 {
+                pick_first = false;
+            }
+
+            if pick_first {
+                first_count += 1;
+            }
+        }
+
+        let ratio = first_count as f64 / TRIALS as f64;
+        let expected = W1 as f64 / (W1 + W2) as f64;
+        assert!(
+            (ratio - expected).abs() < 0.02,
+            "weighted sampling off: got {ratio:.4}, expected {expected:.4}"
+        );
+    }
 }
