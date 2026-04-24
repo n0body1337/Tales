@@ -15,7 +15,7 @@
 
 ## Overview
 
-Tales is a UCI chess engine written in Rust. It is a ground-up reimplementation inspired by [OpenTal](https://github.com/sTaleksY/OpenTal) — itself a derivative of **Rodent III** by **Pawel Koziol** — rewritten in idiomatic Rust with a focus on speed and on playing in the attacking, sacrificial style of **Mikhail Tal**.
+Tales is a UCI chess engine written in Rust. It is a ground-up reimplementation inspired by [**OpenTal**](http://www.pkoziol.cal24.pl/opental/) — a Rodent-derived engine by **Pawel Koziol** tuned with Tal-style evaluation weights by **Brendan J. Norman** — rewritten in idiomatic Rust with a focus on speed and on playing in the attacking, sacrificial style of **Mikhail Tal**.
 
 ## Architecture
 
@@ -114,8 +114,8 @@ Requires Rust 1.95.0 or newer (edition 2024). The opening book is embedded in th
 
 Tales builds on a lineage of open-source chess engines. Credit and thanks to:
 
-- **Pawel Koziol** — author of **Rodent III**, whose evaluation architecture, pattern catalogue, and "engine with character" philosophy are the direct ancestor of Tales.
-- **sTaleksY** — author of [**OpenTal**](https://github.com/sTaleksY/OpenTal), a Rodent-derived engine tuned for Tal-style attacking play; Tales started as a port of OpenTal before diverging.
+- **Pawel Koziol** — author of **Rodent III** and [**OpenTal**](http://www.pkoziol.cal24.pl/opental/). Rodent's evaluation architecture, pattern catalogue, and "engine with character" philosophy are the direct ancestor of Tales; OpenTal is the Rodent fork from which Tales specifically takes its Tal-flavoured identity.
+- **Brendan J. Norman** — contributor of the evaluation weights that give OpenTal its Tal-style attacking personality.
 - **Pablo Vazquez** — author of **Sungorus 1.4**, the engine from which the Rodent family descends.
 - The **Chess Programming Wiki** and the broader engine-development community for the algorithmic knowledge (PVS, LMR, NMP, SEE, magic bitboards, …) that every modern engine relies on.
 
