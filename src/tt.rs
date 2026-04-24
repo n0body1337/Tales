@@ -183,7 +183,7 @@ impl TransTable {
     }
 
     /// Retrieve only the best move (no score/cutoff check).
-    /// Also refreshes entry date on hit .
+    /// Also refreshes entry date on hit.
     #[inline]
     pub fn retrieve_move(&self, key: u64) -> Move {
         let idx = (key as usize) & self.tt_mask;

@@ -25,7 +25,7 @@ use super::magic;
 use super::types::*;
 
 // ============================================================================
-// Static attack tables — initialized once, accessed via raw pointer (no atomic)
+// Static attack tables — initialized once, then read via AtomicPtr + Relaxed
 // ============================================================================
 
 struct LeaperTables {

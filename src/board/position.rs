@@ -770,7 +770,7 @@ impl Position {
         false
     }
 
-    /// Contempt-adjusted draw score .
+    /// Contempt-adjusted draw score.
     /// When it's the engine's turn (`self.side == prog_side`), returns -contempt
     /// (engine dislikes draws). Otherwise returns +contempt.
     pub fn draw_score(&self, contempt: i32, prog_side: Color) -> i32 {
