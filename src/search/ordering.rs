@@ -410,8 +410,99 @@ fn score_captures(pos: &Position, list: &mut MoveList) {
     }
 }
 
+/// Node-local context for classifying MANY quiet moves cheaply.
+///
+/// `is_sacrificial` pays up to four slider-attack lookups per move inside
+/// `gives_check`. When scoring a whole quiet-move list the check geometry is
+/// fixed (same enemy king, same occupancy), so the direct-check target squares
+/// per piece type and the discovered-check candidates can be computed once per
+/// node, reducing each move's test to a few bitboard ops.
+///
+/// Accepted approximation (ordering/classification only): slider check masks
+/// use the CURRENT occupancy, so a slider whose own vacated from-square
+/// unblocks its new check line (e.g. Re7-e2 checking along the e-file through
+/// the just-vacated e7) is a false negative. The exact `gives_check` keeps
+/// serving the single-move picker phases.
+struct QuietSacCtx {
+    zone: Bitboard,   // enemy king attack zone (landing there qualifies)
+    p_chk: Bitboard,  // squares from which our pawn checks the enemy king
+    n_chk: Bitboard,  // ... a knight
+    b_chk: Bitboard,  // ... a bishop (current occ)
+    r_chk: Bitboard,  // ... a rook (current occ)
+    disc: Bitboard,   // our pieces that are sole blockers on enemy-king lines
+    ksq: i32,
+}
+
+impl QuietSacCtx {
+    fn new(pos: &Position) -> Self {
+        let our = pos.side;
+        let enemy = !our;
+        let ksq = pos.king_sq(enemy);
+        let occ = pos.occ_bb();
+
+        let b_chk = attacks::bishop_attacks(occ, ksq);
+        let r_chk = attacks::rook_attacks(occ, ksq);
+
+        // Discovered-check candidates: our piece that is the single blocker
+        // between one of our sliders and the enemy king. Snipers are our
+        // sliders aligned with the king on an EMPTY board but blocked now.
+        let mut disc = Bitboard(0);
+        let empty = Bitboard(0);
+        let mut snipers = (attacks::rook_attacks(empty, ksq) & pos.straight_movers(our))
+            | (attacks::bishop_attacks(empty, ksq) & pos.diag_movers(our));
+        while snipers.is_not_empty() {
+            let s = snipers.pop_lsb();
+            let blockers = attacks::between_bb(s, ksq) & occ;
+            if blockers.popcount() == 1 && (blockers & pos.cl_bb[our.index()]).is_not_empty() {
+                disc |= blockers;
+            }
+        }
+
+        QuietSacCtx {
+            zone: attacks::king_attack_zone(ksq, enemy),
+            p_chk: attacks::pawn_attacks(enemy, ksq),
+            n_chk: attacks::knight_attacks(ksq),
+            b_chk,
+            r_chk,
+            disc,
+            ksq,
+        }
+    }
+
+    /// Does this quiet move target the enemy king (direct check, discovered
+    /// check, or landing in the king zone)? Mirrors `targets_king_or_checks`
+    /// with precomputed masks.
+    #[inline]
+    fn targets_king(&self, pos: &Position, mv: Move) -> bool {
+        let from = mv.from_sq();
+        let to = mv.to_sq();
+        if self.zone.contains(to) {
+            return true;
+        }
+        let landing = if mv.is_prom() {
+            mv.prom_type()
+        } else {
+            pos.tp_on_sq(from)
+        };
+        let direct = match landing {
+            PieceType::Pawn => self.p_chk.contains(to),
+            PieceType::Knight => self.n_chk.contains(to),
+            PieceType::Bishop => self.b_chk.contains(to),
+            PieceType::Rook => self.r_chk.contains(to),
+            PieceType::Queen => self.b_chk.contains(to) || self.r_chk.contains(to),
+            _ => false,
+        };
+        if direct {
+            return true;
+        }
+        // Discovered check: the mover is a sole blocker and leaves the line.
+        self.disc.contains(from) && !attacks::line_bb(from, self.ksq).contains(to)
+    }
+}
+
 #[inline]
 fn score_quiet(pos: &Position, list: &mut MoveList, history: &[[i32; 64]; 13], ref_sq: i32) {
+    let ctx = QuietSacCtx::new(pos);
     for i in 0..list.count {
         // SAFETY: i is bounded by list.count which is always <= MAX_MOVES
         let entry = unsafe { list.moves.get_unchecked_mut(i) };
@@ -426,12 +517,14 @@ fn score_quiet(pos: &Position, list: &mut MoveList, history: &[[i32; 64]; 13], r
         }
         // Sacrificial-quiet bonus — promotes a quiet move that loses
         // material by SEE but threatens the enemy king (e.g. a quiet
-        // queen lift to the attack zone). `is_sacrificial` fast-fails
-        // on the common case (move doesn't attack the king), so SEE
-        // is only paid for moves that actually target the king.
+        // queen lift to the attack zone). The precomputed node context
+        // fast-fails the common case (move doesn't attack the king), so
+        // SEE is only paid for moves that actually target the king.
         // The `is_sac` flag is cached on the entry so the main search
         // loop can use it without re-running the classifier.
-        let is_sac = is_sacrificial(pos, mv);
+        let is_sac = mv.move_type() != CASTLE
+            && ctx.targets_king(pos, mv)
+            && see::see_move(pos, mv) < -SAC_THRESHOLD;
         if is_sac {
             sc += SAC_QUIET_BONUS;
         }
@@ -953,6 +1046,44 @@ mod tests {
         let par = eval::params::EvalParams::new();
         eval::global_pst::init(&par);
         Position::new()
+    }
+
+    /// The precomputed `QuietSacCtx::targets_king` must agree with the exact
+    /// per-move `targets_king_or_checks` on every generated quiet move of a
+    /// varied set of positions. The only tolerated divergence is the
+    /// documented rare case (slider re-checking through its own vacated
+    /// square), which none of these positions contain.
+    #[test]
+    fn quiet_ctx_matches_exact_predicate() {
+        let mut pos = setup();
+        let fens = [
+            START_POS,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -",
+            "r1bqk2r/ppp2ppp/3p1n2/4p3/1bB1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq -",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ -",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -",
+            "r1b1k2r/ppp4p/4p1p1/1q1pN2Q/8/2b5/P4PPP/R1B2RK1 w kq -",
+            "2br3k/q2r3p/p2P3R/2pB4/3b1Qp1/P7/6PP/5R1K w - -",
+            "6k1/5ppp/pb2p3/1p2P3/1P2bPnP/P1r5/1B4QP/R4R1K b - -",
+        ];
+        for fen in fens {
+            pos.set_position(fen);
+            let ctx = QuietSacCtx::new(&pos);
+            let mut list = MoveList::new();
+            generate::generate_quiet(&pos, &mut list);
+            for i in 0..list.count {
+                let mv = list.get(i);
+                if mv.move_type() == CASTLE {
+                    continue;
+                }
+                assert_eq!(
+                    ctx.targets_king(&pos, mv),
+                    targets_king_or_checks(&pos, mv),
+                    "ctx/exact divergence on {fen} move {}",
+                    mv.to_uci_string()
+                );
+            }
+        }
     }
 
     #[test]

@@ -32,6 +32,12 @@ struct LeaperTables {
     pawn_attacks: [[Bitboard; 64]; 2],
     knight_attacks: [Bitboard; 64],
     king_attacks: [Bitboard; 64],
+    /// Full line (both directions, endpoints included) through two aligned
+    /// squares; empty when not aligned. 32 KB.
+    line: Box<[[Bitboard; 64]; 64]>,
+    /// Squares strictly between two aligned squares; empty when not aligned
+    /// or adjacent. 32 KB.
+    between: Box<[[Bitboard; 64]; 64]>,
 }
 
 // Raw pointer — initialized once in init(), then accessed with zero overhead.
@@ -52,6 +58,8 @@ pub fn init() {
             pawn_attacks: [[Bitboard(0); 64]; 2],
             knight_attacks: [Bitboard(0); 64],
             king_attacks: [Bitboard(0); 64],
+            line: Box::new([[Bitboard(0); 64]; 64]),
+            between: Box::new([[Bitboard(0); 64]; 64]),
         };
         for sq in 0..64i32 {
             let bb = Bitboard::from_sq(sq);
@@ -77,6 +85,35 @@ pub fn init() {
             k_att = k_att | shift_north(k_att) | shift_south(k_att);
             // Remove the king square itself
             t.king_attacks[sq as usize] = k_att ^ bb;
+        }
+
+        // Line / between tables: walk the 4 ray axes from every square.
+        // For each axis, the full line through `a` is the union of both
+        // directional walks plus `a` itself; `between[a][b]` accumulates the
+        // squares passed before reaching `b` on the walk away from `a`.
+        const AXES: [(i32, i32); 4] = [(1, 0), (0, 1), (1, 1), (1, -1)];
+        for a in 0..64i32 {
+            let (af, ar) = (file_of(a), rank_of(a));
+            for &(df, dr) in &AXES {
+                let mut line = Bitboard::from_sq(a);
+                for sgn in [1i32, -1] {
+                    let mut betw = Bitboard(0);
+                    let (mut f, mut r) = (af + df * sgn, ar + dr * sgn);
+                    while (0..8).contains(&f) && (0..8).contains(&r) {
+                        let b = sq(f, r);
+                        t.between[a as usize][b as usize] = betw;
+                        betw |= Bitboard::from_sq(b);
+                        line |= Bitboard::from_sq(b);
+                        f += df * sgn;
+                        r += dr * sgn;
+                    }
+                }
+                let mut bb = line ^ Bitboard::from_sq(a);
+                while bb.is_not_empty() {
+                    let b = bb.pop_lsb();
+                    t.line[a as usize][b as usize] = line;
+                }
+            }
         }
         t
     });
@@ -106,6 +143,31 @@ pub fn knight_attacks(sq: i32) -> Bitboard {
 #[inline(always)]
 pub fn king_attacks(sq: i32) -> Bitboard {
     unsafe { *tables().king_attacks.get_unchecked(sq as usize) }
+}
+
+/// Full line through two aligned squares (endpoints included); empty when the
+/// squares are not on a common rank, file, or diagonal.
+#[inline(always)]
+pub fn line_bb(a: i32, b: i32) -> Bitboard {
+    // SAFETY: a and b are valid squares (0-63) per the engine's Square domain.
+    unsafe {
+        *tables()
+            .line
+            .get_unchecked(a as usize)
+            .get_unchecked(b as usize)
+    }
+}
+
+/// Squares strictly between two aligned squares; empty when not aligned.
+#[inline(always)]
+pub fn between_bb(a: i32, b: i32) -> Bitboard {
+    // SAFETY: a and b are valid squares (0-63) per the engine's Square domain.
+    unsafe {
+        *tables()
+            .between
+            .get_unchecked(a as usize)
+            .get_unchecked(b as usize)
+    }
 }
 
 // ============================================================================
