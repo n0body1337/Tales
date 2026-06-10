@@ -20,15 +20,74 @@
 
 use crate::board::attacks;
 use crate::board::bitboard::Bitboard;
+use crate::board::moves::*;
 use crate::board::position::Position;
 use crate::board::types::*;
 
-/// Static Exchange Evaluation (SEE) — determines if a capture sequence wins material.
+/// Static Exchange Evaluation (SEE) for a piece on `from` capturing whatever
+/// occupies `to`.
+///
+/// This square-based entry point does NOT understand promotions or en passant —
+/// it is used for synthetic "is this contact-check defended?" queries in
+/// evaluation, where `from`/`to` are arbitrary squares rather than a real move.
+/// Callers that hold a real [`Move`] should use [`see_move`], which accounts for
+/// the promotion value and the displaced en-passant pawn.
 pub fn see(pos: &Position, from: i32, to: i32) -> i32 {
-    let mut score = [0i32; 32];
-    score[0] = TP_VALUE[pos.tp_on_sq(to).index()];
+    let init = TP_VALUE[pos.tp_on_sq(to).index()];
+    let first = pos.tp_on_sq(from);
+    see_core(pos, from, to, Bitboard(0), init, first)
+}
 
-    let mut occ = pos.occ_bb() ^ Bitboard::from_sq(from);
+/// Move-aware Static Exchange Evaluation.
+///
+/// Handles the two cases the square-based [`see`] cannot:
+/// - **Promotion**: the capture credit includes `promo - pawn`, and the piece
+///   left on `to` (and thus exposed to recapture) is the promoted piece, not a
+///   pawn.
+/// - **En passant**: the captured pawn does not sit on `to`; its square is
+///   removed from the occupancy so that sliders unblocked by its disappearance
+///   are discovered, and the initial gain is a pawn.
+pub fn see_move(pos: &Position, mv: Move) -> i32 {
+    let from = mv.from_sq();
+    let to = mv.to_sq();
+
+    if mv.move_type() == EP_CAP {
+        // The captured pawn shares `to`'s file and the mover's (`from`'s) rank.
+        let cap_sq = sq(file_of(to), rank_of(from));
+        return see_core(pos, from, to, Bitboard::from_sq(cap_sq), TP_VALUE[P.index()], P);
+    }
+
+    let mut init = TP_VALUE[pos.tp_on_sq(to).index()];
+    let mut first = pos.tp_on_sq(from);
+    if mv.is_prom() {
+        let promo = mv.prom_type();
+        init += TP_VALUE[promo.index()] - TP_VALUE[P.index()];
+        first = promo;
+    }
+    see_core(pos, from, to, Bitboard(0), init, first)
+}
+
+/// Shared SEE swap loop.
+///
+/// - `extra_remove`: squares to clear from the occupancy in addition to `from`
+///   (the displaced en-passant pawn); empty for ordinary moves.
+/// - `init_score`: material credited by the initial capture (captured piece,
+///   plus the promotion delta when promoting).
+/// - `first_piece`: the piece left on `to` after the initial move (the promoted
+///   piece for a promotion, otherwise the mover), i.e. what the opponent
+///   recaptures first.
+fn see_core(
+    pos: &Position,
+    from: i32,
+    to: i32,
+    extra_remove: Bitboard,
+    init_score: i32,
+    first_piece: PieceType,
+) -> i32 {
+    let mut score = [0i32; 32];
+    score[0] = init_score;
+
+    let mut occ = (pos.occ_bb() ^ Bitboard::from_sq(from)) & !extra_remove;
 
     // Find all attackers (including x-ray through removed pieces)
     let mut attackers = attacks::attacks_to(to, occ, &pos.cl_bb, &pos.tp_bb);
@@ -37,7 +96,7 @@ pub fn see(pos: &Position, from: i32, to: i32) -> i32 {
         | (attacks::rook_attacks(occ, to) & (pos.tp_bb[R.index()] | pos.tp_bb[Q.index()]));
     attackers &= occ;
 
-    let mut piece_type = pos.tp_on_sq(from);
+    let mut piece_type = first_piece;
 
     // Determine side — the side NOT moving first (so that we can call Swap out of turn)
     let mut side = if (Bitboard::from_sq(from) & pos.cl_bb[BC.index()]).is_empty() {

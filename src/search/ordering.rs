@@ -399,7 +399,7 @@ fn score_captures(pos: &Position, list: &mut MoveList) {
         let to = mv.to_sq();
         if mv.move_type() != EP_CAP
             && TP_VALUE[pos.tp_on_sq(to).index()] < TP_VALUE[pos.tp_on_sq(from).index()]
-            && see::see(pos, from, to) < -SAC_THRESHOLD
+            && see::see_move(pos, mv) < -SAC_THRESHOLD
             && targets_king_or_checks(pos, mv)
         {
             sc += SAC_BONUS;
@@ -485,7 +485,7 @@ pub fn bad_capture(pos: &Position, mv: Move) -> bool {
         return false;
     }
 
-    let see_val = see::see(pos, fsq, tsq);
+    let see_val = see::see_move(pos, mv);
     if see_val >= 0 {
         return false;
     }
@@ -656,8 +656,10 @@ pub fn is_sacrificial(pos: &Position, mv: Move) -> bool {
     }
 
     // Material loss check (SEE-based). A move that wins or breaks even
-    // on material isn't a sacrifice even if it attacks the king.
-    see::see(pos, mv.from_sq(), mv.to_sq()) < -SAC_THRESHOLD
+    // on material isn't a sacrifice even if it attacks the king. `see_move`
+    // accounts for promotion gain and en-passant so a winning promotion that
+    // happens to check/target the king is not mis-flagged as a sacrifice.
+    see::see_move(pos, mv) < -SAC_THRESHOLD
 }
 
 // ============================================================================
