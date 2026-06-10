@@ -502,8 +502,11 @@ impl EvalParams {
             w_outposts: 100, // knight/bishop outpost bonuses
             w_lines: 100,    // rook/queen on open files and 7th rank
             w_struct: 90,    // pawn structure (doubled/isolated/backward)
-            w_shield: 189,   // king pawn shield
-            w_storm: 181,    // pawn storm toward enemy king
+            // Shield/storm raised together 189/181 -> 230/230 (elite-suite
+            // tuned): heavier shelter terms make attacks on damaged kings
+            // score better. Raising either alone measured worse.
+            w_shield: 230, // king pawn shield
+            w_storm: 230,  // pawn storm toward enemy king
             w_center: 50,    // central square control
 
             // Derived tables (populated by recalculate() and init_tables())
@@ -712,7 +715,9 @@ impl EvalParams {
         self.danger[0] = 0;
         let coeff = self.danger_coeff_milli as f64 / 1000.0;
         let mut t: f64 = 0.0;
-        for i in 1..511 {
+        // Fill the whole 512-entry table (the attack accumulator is clamped to
+        // 399 before lookup, but leave no uninitialized tail).
+        for i in 1..512 {
             t = (1280.0_f64).min((coeff * (i as f64) * (i as f64)).min(t + 8.0));
             self.danger[i] = ((t * 100.0) / 256.0) as i32;
         }
