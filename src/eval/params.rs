@@ -276,12 +276,26 @@ pub struct EvalParams {
     /// so they are tunable and cannot be silently masked.
     pub att_own: i32,
     pub att_opp: i32,
+    /// Source values for `sd_mob` (own/opponent mobility scaling), same rule.
+    pub mob_own: i32,
+    pub mob_opp: i32,
 
     // Search-related
     pub draw_score: i32,
     pub eval_blur: i32,
     pub hist_perc: i32,
     pub hist_limit: i32,
+    /// LMR relief for sacrificial quiet moves: `reduction = (reduction -
+    /// relief).max(0)`. 1 = the historical "-1"; large values cancel LMR.
+    pub sac_lmr_relief: i32,
+    /// When non-zero, the sacrificial follow-up extension fires on ANY PV
+    /// follow-up of a sac (not only check/recapture replies).
+    pub sac_ext_quiet: i32,
+    /// Added to the per-branch sac-extension cap `(root_depth + 1) / 4`.
+    pub sac_ext_cap_add: i32,
+    /// Quiescence delta-pruning margin (cp). Higher = more speculative
+    /// captures resolved in qsearch.
+    pub qs_delta_margin: i32,
 
     // Strength-limiting
     pub nps_limit: i32,
@@ -518,6 +532,8 @@ impl EvalParams {
             prog_side: WC,
             att_own: 450,
             att_opp: 100,
+            mob_own: 125,
+            mob_opp: 100,
             // Piece-keeping tendency [P, N, B, R, Q, K, K+1]
             // Higher values = stronger reluctance to trade that piece type.
             // Queen-keeping set to 0: a Tal engine should feel no static pull
@@ -529,6 +545,10 @@ impl EvalParams {
             eval_blur: 0,      // evaluation noise for strength limiting
             hist_perc: 175,    // LMR aggressiveness (history percentage)
             hist_limit: 24576, // LMR history threshold
+            sac_lmr_relief: 1, // historical "LMR -1 for sac quiets"
+            sac_ext_quiet: 0,  // sac follow-up extension needs check/recapture
+            sac_ext_cap_add: 0,
+            qs_delta_margin: 150,
 
             nps_limit: 0,
             time_percentage: 95,
@@ -545,10 +565,10 @@ impl EvalParams {
         self.prog_side = side;
         if side == WC {
             self.sd_att = [self.att_own, self.att_opp]; // [WC]=OWN, [BC]=OPP
-            self.sd_mob = [125, 100];
+            self.sd_mob = [self.mob_own, self.mob_opp];
         } else {
             self.sd_att = [self.att_opp, self.att_own]; // [WC]=OPP, [BC]=OWN
-            self.sd_mob = [100, 125];
+            self.sd_mob = [self.mob_opp, self.mob_own];
         }
     }
 

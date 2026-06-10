@@ -396,6 +396,15 @@ fn apply_override(par: &mut eval::params::EvalParams, key: &str, val: i32) -> bo
         "draw_score" => par.draw_score = val,
         "keep_q" => par.keep_pc[Q.index()] = val,
         "keep_r" => par.keep_pc[R.index()] = val,
+        // Mobility asymmetry and tempo
+        "mob_own" => par.mob_own = val,
+        "mob_opp" => par.mob_opp = val,
+        "tempo_mg" => par.tempo_mg = val,
+        // Search knobs (read via ctx.par on the search path)
+        "sac_lmr_relief" => par.sac_lmr_relief = val,
+        "sac_ext_quiet" => par.sac_ext_quiet = val,
+        "sac_ext_cap_add" => par.sac_ext_cap_add = val,
+        "qs_delta" => par.qs_delta_margin = val,
         _ => return false,
     }
     true
@@ -658,6 +667,141 @@ fn csv_escape(s: &str) -> String {
         format!("\"{q}\"")
     } else {
         s.to_string()
+    }
+}
+
+// ============================================================================
+// Classifier coverage analysis — dev tool for the sacrifice campaign
+// ============================================================================
+
+/// Attack set of the piece sitting on `to` after `mv` is played (approximate
+/// post-move occupancy: from cleared, to set; EP pawn ignored like
+/// `gives_check`).
+fn post_move_attacks(pos: &Position, mv: Move) -> crate::board::bitboard::Bitboard {
+    use crate::board::attacks;
+    use crate::board::bitboard::Bitboard;
+    let from = mv.from_sq();
+    let to = mv.to_sq();
+    let mover = pos.tp_on_sq(from);
+    let occ_after = (pos.occ_bb() ^ Bitboard::from_sq(from)) | Bitboard::from_sq(to);
+    let landing = if mv.is_prom() { mv.prom_type() } else { mover };
+    match landing {
+        P => attacks::pawn_attacks(pos.side, to),
+        N => attacks::knight_attacks(to),
+        B => attacks::bishop_attacks(occ_after, to),
+        R => attacks::rook_attacks(occ_after, to),
+        Q => attacks::queen_attacks(occ_after, to),
+        K => attacks::king_attacks(to),
+        _ => Bitboard(0),
+    }
+}
+
+/// `tales --classify <epd>` — for every record, print predicate columns for
+/// the bm move plus per-position counts of quiet moves each classifier
+/// variant would flag (the "classification load" that estimates move-ordering
+/// noise and SEE cost). Output is CSV on stdout; analyze offline.
+pub fn run_classify(args: &[String]) {
+    use crate::board::{attacks, distance};
+    use crate::movegen::see;
+    use crate::search::ordering;
+
+    let path = match args.first() {
+        Some(p) => p,
+        None => {
+            eprintln!("usage: tales --classify <epd>");
+            return;
+        }
+    };
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read '{path}': {e}");
+            return;
+        }
+    };
+
+    // do_move maintains incremental PST scores, so the global PST must exist.
+    let par = eval::params::EvalParams::new();
+    eval::global_pst::init(&par);
+
+    let mut pos = Position::new();
+    println!("idx,id,bm,cap,chk,zone,dist,ring,zring,see,cur,cand_d2,cand_ring,cand_zring,load_cur,load_d2,load_ring,load_zring");
+
+    for (idx, rec) in content.lines().filter_map(parse_epd_line).enumerate() {
+        pos.set_position(&rec.fen);
+        let Some(bm) = san_to_move(&mut pos, &rec.bm) else {
+            continue;
+        };
+        let enemy = !pos.side;
+        let ksq = pos.king_sq(enemy);
+        let ring = attacks::king_attacks(ksq);
+        let zone = attacks::king_attack_zone(ksq, enemy);
+
+        // Predicate columns for one move.
+        let classify = |pos: &mut Position, mv: Move| -> (bool, bool, bool, i32, bool, bool, i32) {
+            let to = mv.to_sq();
+            let cap = pos.pc[to as usize] != NO_PC || mv.move_type() == EP_CAP;
+            let chk = ordering::gives_check(pos, mv);
+            let in_zone = zone.contains(to);
+            let dist = distance::metric(to, ksq);
+            let att = post_move_attacks(pos, mv);
+            let hits_ring = (att & ring).is_not_empty();
+            let hits_zone = (att & zone).is_not_empty();
+            let sv = see::see_move(pos, mv);
+            (cap, chk, in_zone, dist, hits_ring, hits_zone, sv)
+        };
+
+        let (cap, chk, in_zone, dist, hits_ring, hits_zone, sv) = classify(&mut pos, bm);
+        let loses = sv < -ordering::SAC_THRESHOLD;
+        let cur = (chk || in_zone) && loses;
+        let cand_d2 = (chk || in_zone || dist <= 2) && loses;
+        let cand_ring = (chk || in_zone || hits_ring) && loses;
+        let cand_zring = (chk || in_zone || hits_zone) && loses;
+
+        // Classification load over quiet legal moves.
+        let legal = legal_moves(&mut pos);
+        let (mut l_cur, mut l_d2, mut l_ring, mut l_zring) = (0, 0, 0, 0);
+        for &mv in &legal {
+            if pos.pc[mv.to_sq() as usize] != NO_PC || mv.move_type() == EP_CAP {
+                continue; // quiet moves only
+            }
+            let (_c, qchk, qzone, qdist, qring, qzring, qsv) = classify(&mut pos, mv);
+            let ql = qsv < -ordering::SAC_THRESHOLD;
+            if (qchk || qzone) && ql {
+                l_cur += 1;
+            }
+            if (qchk || qzone || qdist <= 2) && ql {
+                l_d2 += 1;
+            }
+            if (qchk || qzone || qring) && ql {
+                l_ring += 1;
+            }
+            if (qchk || qzone || qzring) && ql {
+                l_zring += 1;
+            }
+        }
+
+        println!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            idx + 1,
+            csv_escape(&rec.id),
+            csv_escape(&rec.bm),
+            cap as u8,
+            chk as u8,
+            in_zone as u8,
+            dist,
+            hits_ring as u8,
+            hits_zone as u8,
+            sv,
+            cur as u8,
+            cand_d2 as u8,
+            cand_ring as u8,
+            cand_zring as u8,
+            l_cur,
+            l_d2,
+            l_ring,
+            l_zring,
+        );
     }
 }
 

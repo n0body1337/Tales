@@ -326,7 +326,9 @@ pub fn quiesce(
 
         if op_pieces > 1 {
             // Prune if captured piece + margin < alpha
-            if floor + TP_VALUE[pos.tp_on_sq(mv.to_sq()).index()] + 150 < alpha_floor {
+            if floor + TP_VALUE[pos.tp_on_sq(mv.to_sq()).index()] + ctx.par.qs_delta_margin
+                < alpha_floor
+            {
                 continue;
             }
             // Prune likely losing captures

@@ -829,17 +829,18 @@ pub fn search(
 
         // 4. sacrificial follow-up extension — keep a forcing line alive
         // when we just played a sac (`was_sac`) and the result is either
-        // a check or a recapture. PV-only because non-PV variants in
+        // a check or a recapture (or any PV follow-up when
+        // `sac_ext_quiet` is set). PV-only because non-PV variants in
         // testing dropped pass rate. `!fl_extended` keeps us from
         // double-extending sac+check moves (the check extension above
         // already handles that common case). Capped per branch via
         // `SearchFrame::ply_extensions` so a long sac chain can't blow
         // up the search tree.
-        let sac_ext_cap = (ctx.searcher.root_depth + 1) / 4;
+        let sac_ext_cap = (ctx.searcher.root_depth + 1) / 4 + ctx.par.sac_ext_cap_add;
         if !fl_extended
             && was_sac
             && is_pv
-            && (child_in_check || mv.to_sq() == last_capt_sq)
+            && (child_in_check || mv.to_sq() == last_capt_sq || ctx.par.sac_ext_quiet != 0)
             && frame.ply_extensions < sac_ext_cap
         {
             new_depth += 1;
@@ -942,11 +943,11 @@ pub fn search(
                 reduction -= 1;
             }
 
-            // Sacrificial quiet moves get one ply less reduction than the
-            // LMR table prescribes. Full skip would cost too many nodes;
-            // -1 is a signal that the move deserves closer inspection.
+            // Sacrificial quiet moves get `sac_lmr_relief` plies less
+            // reduction than the LMR table prescribes (historically 1;
+            // large values cancel LMR for sacs entirely).
             if was_sac && reduction > 0 {
-                reduction -= 1;
+                reduction = (reduction - ctx.par.sac_lmr_relief).max(0);
             }
 
             new_depth -= reduction;

@@ -40,6 +40,9 @@ fn main() {
         // EPD test-suite runner. Bypasses UCI/parse_go entirely so the
         // opening book is never probed during measurement.
         uci::epd::run_suite(&args[1..]);
+    } else if args.len() > 1 && args[1] == "--classify" {
+        // Sacrifice-classifier coverage analysis (dev tool).
+        uci::epd::run_classify(&args[2..]);
     } else {
         // UCI mode
         uci::uci_loop();

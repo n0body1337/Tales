@@ -562,7 +562,7 @@ pub const SAC_QUIET_BONUS: i32 = 1500;
 ///   check that only appears because the EP pawn has vanished is therefore
 ///   a false negative. EP sacs are vanishingly rare, so this is accepted.
 #[inline]
-fn gives_check(pos: &Position, mv: Move) -> bool {
+pub(crate) fn gives_check(pos: &Position, mv: Move) -> bool {
     let from = mv.from_sq();
     let to = mv.to_sq();
     let mover = pos.tp_on_sq(from);
@@ -622,7 +622,7 @@ fn gives_check(pos: &Position, mv: Move) -> bool {
 /// `score_captures` can reuse the cheap predicate without paying a second
 /// SEE call once they already know the move loses material.
 #[inline]
-fn targets_king_or_checks(pos: &Position, mv: Move) -> bool {
+pub(crate) fn targets_king_or_checks(pos: &Position, mv: Move) -> bool {
     if gives_check(pos, mv) {
         return true;
     }
