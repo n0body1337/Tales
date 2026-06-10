@@ -270,17 +270,26 @@ pub fn san_to_move(pos: &mut Position, san: &str) -> Option<Move> {
 struct SuiteArgs {
     path: String,
     time_ms: u64,
+    /// Per-position node budget. When > 0 it overrides `time_ms` with a
+    /// CPU-invariant limit, so several suite runs can be measured in parallel
+    /// without their wall-clock budgets distorting each other's pass rate.
+    nodes: u64,
     hash_mb: usize,
     verbose: bool,
     csv: Option<String>,
+    /// Eval-parameter overrides from repeated `--set key=value`, applied before
+    /// the run so a tuning sweep can be driven from one binary in parallel.
+    overrides: Vec<(String, i32)>,
 }
 
 fn parse_args(args: &[String]) -> Result<SuiteArgs, String> {
     let mut path: Option<String> = None;
     let mut time_ms: u64 = 500;
+    let mut nodes: u64 = 0;
     let mut hash_mb: usize = 16;
     let mut verbose = false;
     let mut csv: Option<String> = None;
+    let mut overrides: Vec<(String, i32)> = Vec::new();
 
     let mut i = 0;
     while i < args.len() {
@@ -296,6 +305,13 @@ fn parse_args(args: &[String]) -> Result<SuiteArgs, String> {
                     .and_then(|t| t.parse().ok())
                     .ok_or("--time requires a number of milliseconds")?;
             }
+            "--nodes" => {
+                i += 1;
+                nodes = args
+                    .get(i)
+                    .and_then(|t| t.parse().ok())
+                    .ok_or("--nodes requires a node count")?;
+            }
             "--hash" => {
                 i += 1;
                 hash_mb = args
@@ -308,6 +324,13 @@ fn parse_args(args: &[String]) -> Result<SuiteArgs, String> {
                 i += 1;
                 csv = Some(args.get(i).cloned().ok_or("--csv requires a path")?);
             }
+            "--set" => {
+                i += 1;
+                let kv = args.get(i).ok_or("--set requires key=value")?;
+                let (k, v) = kv.split_once('=').ok_or("--set expects key=value")?;
+                let val: i32 = v.parse().map_err(|_| format!("--set: bad value in '{kv}'"))?;
+                overrides.push((k.to_string(), val));
+            }
             _ => {}
         }
         i += 1;
@@ -316,10 +339,66 @@ fn parse_args(args: &[String]) -> Result<SuiteArgs, String> {
     Ok(SuiteArgs {
         path: path.ok_or("missing --suite <path>")?,
         time_ms,
+        nodes,
         hash_mb,
         verbose,
         csv,
+        overrides,
     })
+}
+
+/// Apply a single `--set key=value` eval override. Returns false for an unknown
+/// key. Covers the king-attack / threat / tropism / contempt levers exercised by
+/// the sacrifice-tuning campaign; callers re-derive tables afterwards.
+fn apply_override(par: &mut eval::params::EvalParams, key: &str, val: i32) -> bool {
+    match key {
+        // King-attack gating (the keystone knobs)
+        "att_min_wood" => par.att_min_wood = val,
+        "no_queen_att_pct" => par.no_queen_att_pct = val,
+        "danger_coeff" => par.danger_coeff_milli = val,
+        // Asymmetric king-attack scaling (source for sd_att)
+        "att_own" => par.att_own = val,
+        "att_opp" => par.att_opp = val,
+        // King-attack accumulator constants
+        "n_att1" => par.n_att1 = val,
+        "n_att2" => par.n_att2 = val,
+        "b_att1" => par.b_att1 = val,
+        "b_att2" => par.b_att2 = val,
+        "r_att1" => par.r_att1 = val,
+        "r_att2" => par.r_att2 = val,
+        "q_att1" => par.q_att1 = val,
+        "q_att2" => par.q_att2 = val,
+        "n_chk" => par.n_chk = val,
+        "b_chk" => par.b_chk = val,
+        "r_chk" => par.r_chk = val,
+        "q_chk" => par.q_chk = val,
+        "r_contact" => par.r_contact = val,
+        "q_contact" => par.q_contact = val,
+        // Tropism components
+        "ntr_mg" => par.ntr_mg = val,
+        "ntr_eg" => par.ntr_eg = val,
+        "btr_mg" => par.btr_mg = val,
+        "btr_eg" => par.btr_eg = val,
+        "rtr_mg" => par.rtr_mg = val,
+        "rtr_eg" => par.rtr_eg = val,
+        "qtr_mg" => par.qtr_mg = val,
+        "qtr_eg" => par.qtr_eg = val,
+        // Global weights
+        "w_threats" => par.w_threats = val,
+        "w_tropism" => par.w_tropism = val,
+        "w_material" => par.w_material = val,
+        "w_shield" => par.w_shield = val,
+        "w_storm" => par.w_storm = val,
+        "w_lines" => par.w_lines = val,
+        "w_outposts" => par.w_outposts = val,
+        "w_center" => par.w_center = val,
+        // Contempt and piece-keeping
+        "draw_score" => par.draw_score = val,
+        "keep_q" => par.keep_pc[Q.index()] = val,
+        "keep_r" => par.keep_pc[R.index()] = val,
+        _ => return false,
+    }
+    true
 }
 
 // ============================================================================
@@ -345,7 +424,7 @@ pub fn run_suite(args: &[String]) {
         Err(e) => {
             eprintln!("error: {e}");
             eprintln!(
-                "usage: tales --suite <path> [--time <ms>] [--hash <mb>] [--verbose] [--csv <path>]"
+                "usage: tales --suite <path> [--time <ms>] [--nodes <n>] [--hash <mb>] [--verbose] [--csv <path>]"
             );
             return;
         }
@@ -366,19 +445,37 @@ pub fn run_suite(args: &[String]) {
         return;
     }
 
+    let budget = if parsed.nodes > 0 {
+        format!("{} nodes/pos", parsed.nodes)
+    } else {
+        format!("{} ms/pos", parsed.time_ms)
+    };
     println!(
-        "[suite] file = {}, positions = {}, time/pos = {} ms, hash = {} MB",
+        "[suite] file = {}, positions = {}, budget = {}, hash = {} MB",
         parsed.path,
         records.len(),
-        parsed.time_ms,
+        budget,
         parsed.hash_mb,
     );
     println!("[suite] internal book = OFF, external book = OFF");
-    println!();
 
     // Set up search resources (single-threaded; aspiration via iterate()).
     let mut par = eval::params::EvalParams::new();
+    // Apply eval overrides, then re-derive every table that depends on weights
+    // (PST/mobility/passers via recalculate, danger curve via init_tables).
+    if !parsed.overrides.is_empty() {
+        for (k, v) in &parsed.overrides {
+            if apply_override(&mut par, k, *v) {
+                println!("[suite] set {k} = {v}");
+            } else {
+                eprintln!("warning: unknown --set key '{k}' (ignored)");
+            }
+        }
+        par.recalculate();
+        par.init_tables();
+    }
     eval::global_pst::init(&par);
+    println!();
     let mut tt = TransTable::new(parsed.hash_mb);
     let mut eval_hash = eval::new_eval_hash();
     let mut pawn_tt = eval::pawn_hash::PawnHash::new();
@@ -389,9 +486,14 @@ pub fn run_suite(args: &[String]) {
     let suite_start = Instant::now();
 
     for (idx, rec) in records.iter().enumerate() {
-        // Fresh state per position so TT/history/killers don't leak.
+        // Fresh state per position so TT/history/killers/eval caches don't leak.
         pos.set_position(&rec.fen);
         tt.clear();
+        // The eval hash and pawn hash are per-position caches too: leaking them
+        // across positions lets a stale (different-prog_side) entry be reused on
+        // a key match and adds measurement noise. Clear both, matching `run_one`.
+        eval_hash.fill(eval::EvalHashEntry { key: 0, score: 0 });
+        pawn_tt.clear();
         searcher.clear_all();
         searcher.nodes = 0;
         searcher.dp_completed = 0;
@@ -400,9 +502,16 @@ pub fn run_suite(args: &[String]) {
         searcher.is_pondering = false;
         searcher.ponder_enabled = false;
         searcher.silent = true;
-        searcher.time_limit_ms = parsed.time_ms;
+        // Node-limited mode (--nodes) overrides the wall-clock budget with a
+        // CPU-invariant one so parallel runs don't steal each other's time.
+        if parsed.nodes > 0 {
+            searcher.time_limit_ms = u64::MAX;
+            searcher.nodes_limit = parsed.nodes;
+        } else {
+            searcher.time_limit_ms = parsed.time_ms;
+            searcher.nodes_limit = 0;
+        }
         searcher.move_overhead_ms = 0;
-        searcher.nodes_limit = 0;
         searcher.nps_limit = 0;
         searcher.multi_pv = 1;
         par.init_asymmetric(pos.side);
