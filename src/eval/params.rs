@@ -112,6 +112,17 @@ pub struct EvalParams {
     pub q_chk: i32,
     pub r_contact: i32,
     pub q_contact: i32,
+    /// Minimum number of attackers in the enemy king zone (`e.wood`) before the
+    /// king-danger term is scored at all. Rodent used 2; a Tal engine wants a
+    /// lone dominant attacker (common right after a sacrifice) to count too.
+    pub att_min_wood: i32,
+    /// Percent of king-danger retained when the attacking side has NO queen
+    /// (e.g. after a queen sacrifice). Rodent zeroed it (0); we keep a fraction
+    /// so rook/bishop/knight-led mating attacks still register.
+    pub no_queen_att_pct: i32,
+    /// Steepness of the king-danger curve in thousandths (0.027 -> 27); feeds
+    /// `init_tables`. Higher = danger ramps faster with attacker pressure.
+    pub danger_coeff_milli: i32,
 
     // King tropism
     pub ntr_mg: i32,
@@ -260,6 +271,11 @@ pub struct EvalParams {
     pub sd_mob: [i32; 2],
     pub prog_side: Color,
     pub keep_pc: [i32; 7],
+    /// Source values for `sd_att` (own/opponent king-attack scaling), applied by
+    /// `init_asymmetric`. Kept as explicit fields (not hardcoded in the setter)
+    /// so they are tunable and cannot be silently masked.
+    pub att_own: i32,
+    pub att_opp: i32,
 
     // Search-related
     pub draw_score: i32,
@@ -340,6 +356,13 @@ impl EvalParams {
             q_chk: 16,
             r_contact: 24,
             q_contact: 36,
+            // King-attack gating (Tal-tuned, relaxed from Rodent's queen+2 rule).
+            // Tuned against sacrifices_elite.epd: a lone attacker counts
+            // (att_min_wood=1) and a queen-less attack keeps 90% of its danger,
+            // which is what lets the search value queen-sacrifice attacks.
+            att_min_wood: 1,
+            no_queen_att_pct: 90,
+            danger_coeff_milli: 27,
 
             // King tropism — bonus per unit of proximity to enemy king.
             // Higher values pull pieces toward the opponent's king.
@@ -493,9 +516,13 @@ impl EvalParams {
             sd_att: [450, 100],
             sd_mob: [125, 100],
             prog_side: WC,
+            att_own: 450,
+            att_opp: 100,
             // Piece-keeping tendency [P, N, B, R, Q, K, K+1]
             // Higher values = stronger reluctance to trade that piece type.
-            keep_pc: [8, 10, 10, 0, 20, 0, 0],
+            // Queen-keeping set to 0: a Tal engine should feel no static pull
+            // toward holding its queen (tuned on sacrifices_elite.epd).
+            keep_pc: [8, 10, 10, 0, 0, 0, 0],
 
             // Search and strength-limiting
             draw_score: 25,    // contempt: aggressively avoid draws (Tal style)
@@ -517,10 +544,10 @@ impl EvalParams {
     pub fn init_asymmetric(&mut self, side: Color) {
         self.prog_side = side;
         if side == WC {
-            self.sd_att = [450, 100]; // [WC]=OWN, [BC]=OPP
+            self.sd_att = [self.att_own, self.att_opp]; // [WC]=OWN, [BC]=OPP
             self.sd_mob = [125, 100];
         } else {
-            self.sd_att = [100, 450]; // [WC]=OPP, [BC]=OWN
+            self.sd_att = [self.att_opp, self.att_own]; // [WC]=OPP, [BC]=OWN
             self.sd_mob = [100, 125];
         }
     }
@@ -663,9 +690,10 @@ impl EvalParams {
         // attack score (0..510) to centipawn danger value.
         // Coefficient 0.027 controls curve steepness; +8.0 caps per-step growth.
         self.danger[0] = 0;
+        let coeff = self.danger_coeff_milli as f64 / 1000.0;
         let mut t: f64 = 0.0;
         for i in 1..511 {
-            t = (1280.0_f64).min((0.027 * (i as f64) * (i as f64)).min(t + 8.0));
+            t = (1280.0_f64).min((coeff * (i as f64) * (i as f64)).min(t + 8.0));
             self.danger[i] = ((t * 100.0) / 256.0) as i32;
         }
     }

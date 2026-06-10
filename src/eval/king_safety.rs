@@ -26,16 +26,21 @@ use crate::board::types::*;
 pub fn evaluate_king_attack(p: &Position, e: &mut EvalData, par: &EvalParams, sd: Color) {
     let si = sd.index();
 
-    if e.wood[si] > 1 {
-        // Zero attack score without a queen, otherwise cap at 399
-        e.att[si] = if p.queens(sd).is_empty() {
-            0
-        } else {
-            e.att[si].min(399)
-        };
+    if e.wood[si] >= par.att_min_wood {
+        // Index the non-linear danger table (capped at 399, table is 512 wide).
+        let att = e.att[si].clamp(0, 399) as usize;
+        let base = par.danger[att] * par.sd_att[si];
 
-        // Look up danger table and apply side-dependent attack weight
-        let king_danger = (par.danger[e.att[si] as usize] * par.sd_att[si]) / 100;
+        // Rodent zeroed king danger entirely without a queen — which rejects
+        // exactly the queen sacrifices a Tal-style engine wants to find. Retain
+        // a tunable fraction instead: a rook/bishop/knight-led attack after a
+        // queen sac still carries real danger.
+        let king_danger = if p.queens(sd).is_empty() {
+            (base * par.no_queen_att_pct) / (100 * 100)
+        } else {
+            base / 100
+        };
+        e.att[si] = att as i32;
         e.add_both(sd, king_danger);
     }
 }
